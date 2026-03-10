@@ -1,0 +1,13 @@
+[package]
+name = "any2md"
+version = "0.1.0"
+edition = "2021"
+description = "CLI utility for converting files to Markdown"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+lopdf = "0.34"
+image = "0.25"
+base64 = "0.22"
+anyhow = "1"
+thiserror = "1"
