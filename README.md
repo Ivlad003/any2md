@@ -16,10 +16,12 @@ The binary will be at `target/release/any2md`.
 any2md <input> [options]
 
 Options:
-  -o, --output <path>        Output file (default: <input_name>.md)
+  -o, --output <path>            Output file (default: <input_name>.md)
       --images <extract|inline>  Image mode (default: extract)
       --pages <single|split>     Page mode (default: single)
-  -h, --help                 Help
+      --debug                    Enable debug logging to console and file
+      --log-file <path>          Path for debug log file (default: any2md.log)
+  -h, --help                     Help
 ```
 
 ### Examples
@@ -33,6 +35,12 @@ any2md document.pdf -o output/result.md
 
 # Embed images as base64
 any2md document.pdf --images inline
+
+# Enable debug logging (outputs to stderr and any2md.log)
+any2md document.pdf --debug
+
+# Debug logging with custom log file
+any2md document.pdf --debug --log-file /tmp/any2md-debug.log
 ```
 
 ## Supported Formats
@@ -76,6 +84,23 @@ Converters
 ```
 
 All converters produce a unified `Document` model. One `MarkdownRenderer` generates Markdown from it. Adding a new format = new `impl Converter`, nothing else changes.
+
+## Debug Logging
+
+Pass `--debug` to enable detailed logging across the entire conversion pipeline. Logs are written simultaneously to stderr (with colors) and a log file (default: `any2md.log`).
+
+| Component | Level | What is logged |
+|-----------|-------|----------------|
+| Extractor | `DEBUG` | Page count, font maps, content stream success/fallback, per-page text block and image counts |
+| Extractor | `TRACE` | Individual PDF font-set operators (Tf) |
+| Classifier | `DEBUG` | Baseline font size, page count |
+| Classifier | `TRACE` | Every block classification decision: text preview, font name, font size, coordinates, result |
+| PdfConverter | `INFO` | Pipeline start/complete with total element counts |
+| PdfConverter | `DEBUG` | Each pipeline phase (extraction, classification, metadata, assembly) |
+| Renderer | `DEBUG` | Rendering mode, image file saves with paths and byte sizes |
+| CLI | `DEBUG`/`INFO` | Conversion options, converter selection, output path |
+
+Without `--debug`, no logging overhead is added.
 
 ## Known Limitations
 
