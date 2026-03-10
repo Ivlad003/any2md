@@ -128,12 +128,15 @@ impl AudioConverter {
         tracing::info!("Transcribing audio file: {}", path.display());
 
         // 3. Transcribe via the selected engine.
+        eprintln!("🔍 Transcribing ({:?} engine)...", options.engine);
         let segments = match options.engine {
             AudioEngine::Local => transcribe_local(path, &options.model_path)?,
             AudioEngine::Cloud => transcribe_cloud(path)?,
         };
+        eprintln!("✅ Transcription complete ({} segments).", segments.len());
 
         // 4. Detect speaker sections.
+        eprintln!("👥 Detecting speakers...");
         let sections = detect_speakers(&segments);
 
         // 5. Build Document.
@@ -167,14 +170,16 @@ impl AudioConverter {
             return Ok(());
         }
 
-        tracing::info!(
-            "Captured {} samples ({:.1}s at 16 kHz). Transcribing...",
-            samples.len(),
-            samples.len() as f64 / 16000.0
-        );
+        let duration_secs = samples.len() as f64 / 16000.0;
+        eprintln!("🎵 Captured {:.1}s of audio.", duration_secs);
 
+        eprintln!("📦 Loading Whisper model...");
         let model_path = ensure_model(&options.model_path)?;
+
+        eprintln!("🔍 Transcribing audio...");
         let segments = run_whisper_inference(&model_path, &samples)?;
+
+        eprintln!("👥 Detecting speakers...");
         let sections = detect_speakers(&segments);
         let doc = build_document(Some("Live Recording".to_string()), &sections);
 
@@ -220,6 +225,8 @@ fn ensure_model(model_path: &Option<PathBuf>) -> Result<PathBuf, ConvertError> {
 
     // Auto-download.
     std::fs::create_dir_all(&default_dir)?;
+    eprintln!("📥 Downloading Whisper base model (~148 MB)...");
+    eprintln!("   Destination: {}", model_file.display());
     tracing::info!(
         "Downloading Whisper base model to {} ...",
         model_file.display()
@@ -257,6 +264,7 @@ fn ensure_model(model_path: &Option<PathBuf>) -> Result<PathBuf, ConvertError> {
     }
 
     std::fs::write(&model_file, &bytes)?;
+    eprintln!("✅ Model downloaded ({:.1} MB).", bytes.len() as f64 / 1024.0 / 1024.0);
     tracing::info!("Model downloaded successfully ({} bytes).", bytes.len());
 
     Ok(model_file)
@@ -805,13 +813,44 @@ fn capture_mic_until_enter() -> Result<Vec<f32>, ConvertError> {
         ConvertError::TranscriptionError(format!("Failed to start audio stream: {e}"))
     })?;
 
-    println!("Recording... Press Enter to stop.");
+    eprintln!("🎙  Recording... Press Enter to stop.");
 
-    // Wait for Enter on a separate thread.
+    // Spawn a thread that prints elapsed time every second.
+    let timer_flag = Arc::clone(&stop_flag);
+    std::thread::spawn(move || {
+        let start = std::time::Instant::now();
+        loop {
+            if timer_flag.load(Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            if timer_flag.load(Ordering::Relaxed) {
+                break;
+            }
+            let elapsed = start.elapsed().as_secs();
+            let mins = elapsed / 60;
+            let secs = elapsed % 60;
+            eprint!("\r⏺  Recording: {:02}:{:02}  ", mins, secs);
+        }
+    });
+
+    // Wait for Enter on a separate thread using raw byte reads for reliability.
     let enter_flag = Arc::clone(&stop_flag);
     let handle = std::thread::spawn(move || {
-        let mut line = String::new();
-        let _ = std::io::stdin().read_line(&mut line);
+        use std::io::Read;
+        let stdin = std::io::stdin();
+        let mut buf = [0u8; 1];
+        loop {
+            match stdin.lock().read(&mut buf) {
+                Ok(0) => break, // EOF
+                Ok(_) => {
+                    if buf[0] == b'\n' || buf[0] == b'\r' {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
         enter_flag.store(true, Ordering::Relaxed);
     });
 
@@ -831,12 +870,20 @@ fn capture_mic_until_enter() -> Result<Vec<f32>, ConvertError> {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    // Wait for the Enter thread to finish (it will exit quickly since stop_flag is set,
-    // or it already set the flag itself).
-    let _ = handle.join();
+    // The Enter thread will exit quickly since stop_flag is set or it already set the flag.
+    // Use a timeout to avoid blocking forever if stdin is stuck.
+    let join_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::time::Instant::now() < join_deadline {
+        if handle.is_finished() {
+            let _ = handle.join();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 
     // Stop recording.
     drop(stream);
+    eprintln!("\r✅ Recording stopped.                ");
 
     let raw_samples = buffer.lock().unwrap_or_else(|e| e.into_inner()).clone();
 

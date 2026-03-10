@@ -137,7 +137,7 @@ fn main() {
 
     // --- Dispatch: Audio live mode (no file input) ---
     if cli.audio && cli.live {
-        eprintln!("Recording from microphone... Press Enter to stop.");
+        eprintln!("🎙  Starting live recording...");
         let audio_opts = AudioOptions {
             engine: audio_engine,
             model_path: cli.model,
@@ -165,7 +165,7 @@ fn main() {
             image_output_dir,
         };
 
-        eprintln!("Fetching {}...", url);
+        eprintln!("🌐 Fetching {}...", url);
         let doc = match WebConverter::convert_url(url, &options) {
             Ok(d) => d,
             Err(e) => {
@@ -213,7 +213,7 @@ fn main() {
             model_path: cli.model,
         };
 
-        eprintln!("Transcribing {}...", input.display());
+        eprintln!("🎵 Transcribing {}...", input.display());
         let doc = match AudioConverter::convert_file(input, &audio_opts) {
             Ok(d) => d,
             Err(e) => {
@@ -240,7 +240,7 @@ fn main() {
             "cloud" => OcrEngine::Cloud,
             _ => OcrEngine::Local,
         };
-        eprintln!("Converting {} (OCR {:?})...", input.display(), ocr_engine);
+        eprintln!("🖼  Converting {} (OCR {:?})...", input.display(), ocr_engine);
         let doc = match ImageOcrConverter::convert_with_engine(input, &options, ocr_engine) {
             Ok(d) => d,
             Err(e) => {
@@ -269,7 +269,7 @@ fn main() {
         extension = ext,
         "Found converter"
     );
-    eprintln!("Converting {}...", input.display());
+    eprintln!("📄 Converting {}...", input.display());
 
     let doc = match converter.convert(input, &options) {
         Ok(d) => {
@@ -306,7 +306,7 @@ fn render_and_write(doc: &any2md::model::document::Document, options: &ConvertOp
     match std::fs::write(output_path, &markdown) {
         Ok(_) => {
             info!(output = %output_path.display(), "Written successfully");
-            eprintln!("Written to {}", output_path.display());
+            eprintln!("✅ Written to {}", output_path.display());
         }
         Err(e) => {
             eprintln!("Error writing output: {}", e);
