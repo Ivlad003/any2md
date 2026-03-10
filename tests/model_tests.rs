@@ -1,4 +1,6 @@
 use any2md::model::document::*;
+use any2md::model::options::*;
+use std::path::PathBuf;
 
 #[test]
 fn test_document_creation() {
@@ -83,4 +85,20 @@ fn test_all_element_variants() {
         Element::BlockQuote { text: RichText { segments: vec![] } },
     ];
     assert_eq!(elements.len(), 8);
+}
+
+#[test]
+fn test_convert_options_defaults() {
+    let opts = ConvertOptions::default();
+    assert!(matches!(opts.image_mode, ImageMode::Extract));
+    assert!(matches!(opts.page_mode, PageMode::SingleFile));
+    assert_eq!(opts.image_output_dir, PathBuf::from("images"));
+}
+
+#[test]
+fn test_image_mode_variants() {
+    let extract = ImageMode::Extract;
+    let inline = ImageMode::Inline;
+    assert!(matches!(extract, ImageMode::Extract));
+    assert!(matches!(inline, ImageMode::Inline));
 }
