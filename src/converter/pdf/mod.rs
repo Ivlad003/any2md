@@ -25,10 +25,11 @@ impl Converter for PdfConverter {
     fn convert(&self, input: &Path, _options: &ConvertOptions) -> Result<Document, ConvertError> {
         let raw_pages = PdfExtractor::extract(input)?;
         let classified = Classifier::classify(&raw_pages);
+        let pdf_meta = PdfExtractor::extract_metadata(input);
         let metadata = Metadata {
-            title: None,
-            author: None,
-            date: None,
+            title: pdf_meta.title,
+            author: pdf_meta.author,
+            date: pdf_meta.date,
         };
         Ok(Assembler::assemble(classified, metadata))
     }
