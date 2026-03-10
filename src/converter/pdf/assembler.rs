@@ -5,10 +5,7 @@ use crate::model::document::*;
 pub struct Assembler;
 
 impl Assembler {
-    pub fn assemble(
-        classified_pages: Vec<Vec<ClassifiedElement>>,
-        metadata: Metadata,
-    ) -> Document {
+    pub fn assemble(classified_pages: Vec<Vec<ClassifiedElement>>, metadata: Metadata) -> Document {
         let pages = classified_pages
             .into_iter()
             .map(Self::assemble_page)
@@ -30,62 +27,60 @@ impl Assembler {
                     });
                     i += 1;
                 }
-                ClassifiedElement::Text(block, block_type) => {
-                    match block_type {
-                        BlockType::Heading(level) => {
-                            elements.push(Element::Heading {
-                                level: *level,
-                                text: block.text.clone(),
-                            });
-                            i += 1;
-                        }
-                        BlockType::CodeBlock => {
-                            let mut code_lines = vec![block.text.clone()];
-                            i += 1;
-                            while i < elems.len() {
-                                if let ClassifiedElement::Text(b, BlockType::CodeBlock) = &elems[i] {
-                                    code_lines.push(b.text.clone());
-                                    i += 1;
-                                } else {
-                                    break;
-                                }
-                            }
-                            elements.push(Element::CodeBlock {
-                                language: None,
-                                code: code_lines.join("\n"),
-                            });
-                        }
-                        BlockType::ListItem => {
-                            let start = i;
-                            let mut items = Vec::new();
-                            while i < elems.len() {
-                                if let ClassifiedElement::Text(b, BlockType::ListItem) = &elems[i] {
-                                    let text = Self::strip_list_marker(&b.text);
-                                    items.push(ListItem {
-                                        text: Self::rich_text_from_block(&text, b),
-                                        children: vec![],
-                                    });
-                                    i += 1;
-                                } else {
-                                    break;
-                                }
-                            }
-                            let first_text = if let ClassifiedElement::Text(b, _) = &elems[start] {
-                                b.text.as_str()
-                            } else {
-                                ""
-                            };
-                            let ordered = Self::detect_ordered(first_text);
-                            elements.push(Element::List { ordered, items });
-                        }
-                        BlockType::Paragraph => {
-                            elements.push(Element::Paragraph {
-                                text: Self::rich_text_from_block(&block.text, block),
-                            });
-                            i += 1;
-                        }
+                ClassifiedElement::Text(block, block_type) => match block_type {
+                    BlockType::Heading(level) => {
+                        elements.push(Element::Heading {
+                            level: *level,
+                            text: block.text.clone(),
+                        });
+                        i += 1;
                     }
-                }
+                    BlockType::CodeBlock => {
+                        let mut code_lines = vec![block.text.clone()];
+                        i += 1;
+                        while i < elems.len() {
+                            if let ClassifiedElement::Text(b, BlockType::CodeBlock) = &elems[i] {
+                                code_lines.push(b.text.clone());
+                                i += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        elements.push(Element::CodeBlock {
+                            language: None,
+                            code: code_lines.join("\n"),
+                        });
+                    }
+                    BlockType::ListItem => {
+                        let start = i;
+                        let mut items = Vec::new();
+                        while i < elems.len() {
+                            if let ClassifiedElement::Text(b, BlockType::ListItem) = &elems[i] {
+                                let text = Self::strip_list_marker(&b.text);
+                                items.push(ListItem {
+                                    text: Self::rich_text_from_block(&text, b),
+                                    children: vec![],
+                                });
+                                i += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        let first_text = if let ClassifiedElement::Text(b, _) = &elems[start] {
+                            b.text.as_str()
+                        } else {
+                            ""
+                        };
+                        let ordered = Self::detect_ordered(first_text);
+                        elements.push(Element::List { ordered, items });
+                    }
+                    BlockType::Paragraph => {
+                        elements.push(Element::Paragraph {
+                            text: Self::rich_text_from_block(&block.text, block),
+                        });
+                        i += 1;
+                    }
+                },
             }
         }
 
@@ -348,13 +343,19 @@ mod tests {
         ];
         let doc = Assembler::assemble(vec![blocks], empty_metadata());
         assert_eq!(doc.pages[0].elements.len(), 3);
-        assert!(matches!(&doc.pages[0].elements[0], Element::Paragraph { .. }));
+        assert!(matches!(
+            &doc.pages[0].elements[0],
+            Element::Paragraph { .. }
+        ));
         if let Element::Image { data, alt } = &doc.pages[0].elements[1] {
             assert_eq!(data, &vec![0x89, 0x50, 0x4E, 0x47]);
             assert!(alt.is_none());
         } else {
             panic!("Expected Image element");
         }
-        assert!(matches!(&doc.pages[0].elements[2], Element::Paragraph { .. }));
+        assert!(matches!(
+            &doc.pages[0].elements[2],
+            Element::Paragraph { .. }
+        ));
     }
 }

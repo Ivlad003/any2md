@@ -218,11 +218,9 @@ impl PdfExtractor {
 
             if let Object::Stream(ref stream) = *obj {
                 // Check if Subtype is Image
-                let subtype = stream.dict.get(b"Subtype").ok().and_then(|s| {
-                    match s {
-                        Object::Name(n) => Some(n.clone()),
-                        _ => None,
-                    }
+                let subtype = stream.dict.get(b"Subtype").ok().and_then(|s| match s {
+                    Object::Name(n) => Some(n.clone()),
+                    _ => None,
                 });
 
                 if subtype.as_deref() != Some(b"Image") {
@@ -233,14 +231,14 @@ impl PdfExtractor {
                     .dict
                     .get(b"Width")
                     .ok()
-                    .and_then(|o| Self::obj_to_f64(o))
+                    .and_then(Self::obj_to_f64)
                     .unwrap_or(0.0) as u32;
 
                 let height = stream
                     .dict
                     .get(b"Height")
                     .ok()
-                    .and_then(|o| Self::obj_to_f64(o))
+                    .and_then(Self::obj_to_f64)
                     .unwrap_or(0.0) as u32;
 
                 if width == 0 || height == 0 {
@@ -294,27 +292,20 @@ impl PdfExtractor {
         // Track text matrix position separately for Tm
         let mut tm_x: f64 = 0.0;
         let mut tm_y: f64 = 0.0;
-        let mut in_text = false;
-
         for op in &content.operations {
             match op.operator.as_str() {
                 "BT" => {
-                    in_text = true;
-                    // Reset text position at BT
                     tm_x = 0.0;
                     tm_y = 0.0;
                     x = 0.0;
                     y = 0.0;
                 }
-                "ET" => {
-                    in_text = false;
-                }
-                "Tf" if in_text || true => {
+                "ET" => {}
+                "Tf" => {
                     // Set font — can appear outside BT/ET in some PDFs
                     if op.operands.len() >= 2 {
                         if let Ok(name_bytes) = op.operands[0].as_name() {
-                            current_font_tag =
-                                String::from_utf8_lossy(name_bytes).into_owned();
+                            current_font_tag = String::from_utf8_lossy(name_bytes).into_owned();
                         }
                         current_font_size = Self::obj_to_f64(&op.operands[1]).unwrap_or(12.0);
                     }
@@ -501,10 +492,7 @@ impl PdfExtractor {
     }
 
     /// Fallback: use doc.extract_text() when content stream parsing fails.
-    fn extract_page_fallback(
-        doc: &Document,
-        page_num: u32,
-    ) -> Result<RawPage, ConvertError> {
+    fn extract_page_fallback(doc: &Document, page_num: u32) -> Result<RawPage, ConvertError> {
         let mut elements = Vec::new();
 
         if let Ok(content) = doc.extract_text(&[page_num]) {
@@ -583,7 +571,10 @@ mod tests {
 
     #[test]
     fn test_extract_tj_text() {
-        let operands = vec![Object::String(b"Hello World".to_vec(), lopdf::StringFormat::Literal)];
+        let operands = vec![Object::String(
+            b"Hello World".to_vec(),
+            lopdf::StringFormat::Literal,
+        )];
         let text = PdfExtractor::extract_tj_text(&operands);
         assert_eq!(text, Some("Hello World".to_string()));
     }

@@ -25,14 +25,12 @@ impl Classifier {
             .map(|page| {
                 page.elements
                     .iter()
-                    .filter_map(|el| match el {
+                    .map(|el| match el {
                         RawElement::Text(block) => {
                             let block_type = Self::classify_block(block, avg_font_size);
-                            Some(ClassifiedElement::Text(block.clone(), block_type))
+                            ClassifiedElement::Text(block.clone(), block_type)
                         }
-                        RawElement::Image(img) => {
-                            Some(ClassifiedElement::Image(img.clone()))
-                        }
+                        RawElement::Image(img) => ClassifiedElement::Image(img.clone()),
                     })
                     .collect()
             })
@@ -247,8 +245,14 @@ mod tests {
         };
         let result = Classifier::classify(&[page]);
         assert_eq!(result[0].len(), 3);
-        assert!(matches!(&result[0][0], ClassifiedElement::Text(_, BlockType::Paragraph)));
+        assert!(matches!(
+            &result[0][0],
+            ClassifiedElement::Text(_, BlockType::Paragraph)
+        ));
         assert!(matches!(&result[0][1], ClassifiedElement::Image(_)));
-        assert!(matches!(&result[0][2], ClassifiedElement::Text(_, BlockType::Paragraph)));
+        assert!(matches!(
+            &result[0][2],
+            ClassifiedElement::Text(_, BlockType::Paragraph)
+        ));
     }
 }
