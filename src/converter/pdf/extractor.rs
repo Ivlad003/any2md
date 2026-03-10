@@ -1,6 +1,6 @@
 use crate::error::ConvertError;
 use lopdf::{Document, Object, ObjectId};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use tracing::{debug, trace, warn};
 
@@ -9,8 +9,11 @@ pub struct RawTextBlock {
     pub text: String,
     pub x: f64,
     pub y: f64,
+    pub end_x: f64,
     pub font_size: f64,
     pub font_name: String,
+    pub has_bold: bool,
+    pub has_italic: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +40,28 @@ pub struct PdfMetadata {
     pub date: Option<String>,
 }
 
+// --- Thresholds and limits ---
+/// Y tolerance for considering blocks on the same line (in PDF points).
+const SAME_LINE_Y_TOLERANCE: f64 = 1.0;
+/// Average character width as a fraction of font size (proportional font estimate).
+const AVG_CHAR_WIDTH_RATIO: f64 = 0.5;
+/// Phase 1 merge: max gap multiplier before treating as column boundary.
+const PHASE1_MAX_GAP: f64 = 2.0;
+/// Phase 2 merge: max gap multiplier for line assembly.
+const PHASE2_MAX_GAP: f64 = 4.0;
+/// Gap multiplier above which a space is inserted between merged blocks.
+const WORD_GAP_THRESHOLD: f64 = 0.3;
+/// Minimum negative gap (overlap) before blocks are treated as unrelated.
+const MAX_OVERLAP_MULTIPLIER: f64 = 2.0;
+/// Maximum characters for fix_end_x adjustment.
+const FIX_END_X_MAX_CHARS: usize = 3;
+/// Maximum stretch factor for fix_end_x (handles wide chars like W, M).
+const FIX_END_X_STRETCH: f64 = 2.0;
+/// Default line height multiplier for T* operator (fallback when TL not set).
+const DEFAULT_LINE_HEIGHT: f64 = 1.2;
+/// Maximum text elements per page to prevent unbounded memory growth.
+const MAX_ELEMENTS_PER_PAGE: usize = 100_000;
+
 pub struct PdfExtractor;
 
 impl PdfExtractor {
@@ -49,7 +74,7 @@ impl PdfExtractor {
             .map_err(|e| ConvertError::CorruptedFile(format!("Failed to parse PDF: {}", e)))?;
 
         let mut pages = Vec::new();
-        let page_count = doc.get_pages().len();
+        let page_count = doc.get_pages().len().min(u32::MAX as usize);
         debug!(page_count, path = %path.display(), "PDF loaded");
 
         for page_num in 1..=page_count as u32 {
@@ -77,6 +102,45 @@ impl PdfExtractor {
         Ok(pages)
     }
 
+    /// Extract raw pages and metadata from a PDF in a single load.
+    pub fn extract_with_metadata(path: &Path) -> Result<(Vec<RawPage>, PdfMetadata), ConvertError> {
+        if !path.exists() {
+            return Err(ConvertError::FileNotFound(path.to_path_buf()));
+        }
+
+        let doc = Document::load(path)
+            .map_err(|e| ConvertError::CorruptedFile(format!("Failed to parse PDF: {}", e)))?;
+
+        let mut pages = Vec::new();
+        let page_count = doc.get_pages().len().min(u32::MAX as usize);
+        debug!(page_count, path = %path.display(), "PDF loaded (with metadata)");
+
+        for page_num in 1..=page_count as u32 {
+            debug!(page_num, page_count, "Extracting page");
+            let raw_page = Self::extract_page(&doc, page_num)?;
+            let text_count = raw_page
+                .elements
+                .iter()
+                .filter(|e| matches!(e, RawElement::Text(_)))
+                .count();
+            let image_count = raw_page
+                .elements
+                .iter()
+                .filter(|e| matches!(e, RawElement::Image(_)))
+                .count();
+            debug!(
+                page_num,
+                text_blocks = text_count,
+                images = image_count,
+                "Page extracted"
+            );
+            pages.push(raw_page);
+        }
+
+        let metadata = Self::extract_metadata_from_doc(&doc);
+        Ok((pages, metadata))
+    }
+
     /// Extract metadata (title, author, date) from the PDF document info dictionary.
     pub fn extract_metadata(path: &Path) -> PdfMetadata {
         let doc = match Document::load(path) {
@@ -90,7 +154,12 @@ impl PdfExtractor {
             }
         };
 
-        let info_dict = Self::get_info_dict(&doc);
+        Self::extract_metadata_from_doc(&doc)
+    }
+
+    /// Extract metadata from an already-loaded PDF document.
+    fn extract_metadata_from_doc(doc: &Document) -> PdfMetadata {
+        let info_dict = Self::get_info_dict(doc);
 
         let title = info_dict
             .as_ref()
@@ -192,6 +261,12 @@ impl PdfExtractor {
             }
         };
 
+        // Fix end_x: use actual advance between consecutive same-line blocks
+        Self::fix_end_x(&mut page.elements);
+
+        // Merge adjacent text blocks on the same line
+        page.elements = Self::merge_text_blocks(page.elements);
+
         // Extract images from page resources
         let images = Self::extract_page_images(doc, page_id);
         for img in images {
@@ -199,6 +274,132 @@ impl PdfExtractor {
         }
 
         Ok(page)
+    }
+
+    /// Fix end_x for short text blocks using the actual advance to the next
+    /// same-line block. The estimated end_x (char_count * AVG_CHAR_WIDTH_RATIO * font_size)
+    /// is inaccurate for proportional fonts. This pass sets end_x based on the
+    /// actual gap between blocks, but caps it to avoid spanning column boundaries.
+    fn fix_end_x(elements: &mut [RawElement]) {
+        let len = elements.len();
+        for i in 0..len.saturating_sub(1) {
+            let (curr_y, curr_x, curr_end_x, curr_chars) = {
+                if let RawElement::Text(ref b) = elements[i] {
+                    (b.y, b.x, b.end_x, b.text.trim().chars().count())
+                } else {
+                    continue;
+                }
+            };
+            if curr_chars > FIX_END_X_MAX_CHARS {
+                continue;
+            }
+            let next_x = if let RawElement::Text(ref b) = elements[i + 1] {
+                if (b.y - curr_y).abs() < SAME_LINE_Y_TOLERANCE {
+                    b.x
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            };
+            let max_end = curr_x + (curr_end_x - curr_x) * FIX_END_X_STRETCH;
+            let new_end_x = next_x.min(max_end);
+            if new_end_x > curr_x {
+                if let RawElement::Text(ref mut b) = elements[i] {
+                    b.end_x = new_end_x;
+                }
+            }
+        }
+    }
+
+    /// Phase 1 merge: merge adjacent text blocks on the same line within
+    /// the same table cell. Uses PHASE1_MAX_GAP to preserve column boundaries.
+    fn merge_text_blocks(elements: Vec<RawElement>) -> Vec<RawElement> {
+        Self::merge_same_line_blocks(elements, PHASE1_MAX_GAP)
+    }
+
+    /// Phase 2 merge: assemble same-line blocks into full text lines.
+    /// Runs AFTER table detection on non-table elements only.
+    /// Uses PHASE2_MAX_GAP for a more permissive column boundary.
+    pub fn assemble_lines(elements: Vec<RawElement>) -> Vec<RawElement> {
+        Self::merge_same_line_blocks(elements, PHASE2_MAX_GAP)
+    }
+
+    /// Core merge: join adjacent same-line text blocks.
+    /// `max_gap_multiplier` controls the column-boundary threshold
+    /// (gap > avg_char_width * max_gap_multiplier → separate blocks).
+    fn merge_same_line_blocks(
+        elements: Vec<RawElement>,
+        max_gap_multiplier: f64,
+    ) -> Vec<RawElement> {
+        let mut merged: Vec<RawElement> = Vec::new();
+
+        for el in elements {
+            match el {
+                RawElement::Text(block) => {
+                    if let Some(RawElement::Text(ref mut prev)) = merged.last_mut() {
+                        let same_line = (prev.y - block.y).abs() < SAME_LINE_Y_TOLERANCE;
+                        if same_line {
+                            let gap = block.x - prev.end_x;
+                            let avg_char_width = prev.font_size * AVG_CHAR_WIDTH_RATIO;
+
+                            // Large positive gap → column boundary, keep separate
+                            if gap > avg_char_width * max_gap_multiplier {
+                                merged.push(RawElement::Text(block));
+                                continue;
+                            }
+
+                            // Large negative gap (significant overlap) → likely
+                            // unrelated content (watermark, annotation), keep separate
+                            if gap < -(avg_char_width * MAX_OVERLAP_MULTIPLIER) {
+                                merged.push(RawElement::Text(block));
+                                continue;
+                            }
+
+                            // Insert space for word-level gaps
+                            let needs_space = gap > avg_char_width * WORD_GAP_THRESHOLD;
+                            if needs_space
+                                && !block.text.starts_with(' ')
+                                && !prev.text.ends_with(' ')
+                            {
+                                prev.text.push(' ');
+                            }
+                            prev.text.push_str(&block.text);
+                            prev.end_x = block.end_x;
+                            prev.has_bold = prev.has_bold || block.has_bold;
+                            prev.has_italic = prev.has_italic || block.has_italic;
+                            let same_font = prev.font_name == block.font_name
+                                && (prev.font_size - block.font_size).abs() < 0.1;
+                            if !same_font {
+                                prev.font_name = block.font_name;
+                                prev.font_size = block.font_size;
+                            }
+                            continue;
+                        }
+                    }
+                    merged.push(RawElement::Text(block));
+                }
+                other => merged.push(other),
+            }
+        }
+
+        // Trim and filter empty blocks
+        for el in &mut merged {
+            if let RawElement::Text(ref mut b) = el {
+                let trimmed = b.text.trim().to_string();
+                b.text = trimmed;
+            }
+        }
+        merged
+            .into_iter()
+            .filter(|el| {
+                if let RawElement::Text(ref b) = el {
+                    !b.text.is_empty()
+                } else {
+                    true
+                }
+            })
+            .collect()
     }
 
     /// Extract Image XObjects from the page resources.
@@ -318,36 +519,89 @@ impl PdfExtractor {
         let font_map = Self::build_font_map(doc, page_id);
         debug!(fonts = ?font_map, "Font map built");
 
+        // Build ToUnicode CMap tables for text decoding
+        let cmap_tables = Self::build_cmap_tables(doc, page_id);
+        debug!(cmap_count = cmap_tables.len(), "CMap tables built");
+
         let mut elements = Vec::new();
         let mut current_font_tag = String::new();
         let mut current_font_size: f64 = 12.0;
+        // Cached resolved font name + bold/italic flags (updated on Tf)
+        let mut current_font_name = String::from("Unknown");
+        let mut current_bold = false;
+        let mut current_italic = false;
         let mut x: f64 = 0.0;
         let mut y: f64 = 0.0;
         // Track text matrix position separately for Tm
         let mut tm_x: f64 = 0.0;
         let mut tm_y: f64 = 0.0;
+        // Text leading set by TL operator (used by T*, ', " operators)
+        let mut text_leading: f64 = 0.0;
+        // Track pending space: when a whitespace-only text op is encountered,
+        // set this flag so the next non-space text gets a leading space
+        let mut pending_space = false;
+
         for op in &content.operations {
+            // Memory safety: cap elements per page
+            if elements.len() >= MAX_ELEMENTS_PER_PAGE {
+                warn!("Reached max element limit ({}), truncating page", MAX_ELEMENTS_PER_PAGE);
+                break;
+            }
+
             match op.operator.as_str() {
                 "BT" => {
                     tm_x = 0.0;
                     tm_y = 0.0;
                     x = 0.0;
                     y = 0.0;
+                    // Don't reset pending_space — it may carry across BT/ET groups
                 }
                 "ET" => {}
+                "TL" => {
+                    // Set text leading for T*, ', " operators
+                    if let Some(val) = op.operands.first().and_then(Self::obj_to_f64) {
+                        text_leading = val;
+                    }
+                }
                 "Tf" => {
                     if op.operands.len() >= 2 {
                         if let Ok(name_bytes) = op.operands[0].as_name() {
                             current_font_tag = String::from_utf8_lossy(name_bytes).into_owned();
                         }
                         current_font_size = Self::obj_to_f64(&op.operands[1]).unwrap_or(12.0);
+                        // Cache resolved font name and style flags (M-3)
+                        let resolved = font_map
+                            .get(current_font_tag.as_str())
+                            .cloned()
+                            .unwrap_or_else(|| current_font_tag.clone());
+                        current_font_name = if resolved.is_empty() {
+                            "Unknown".to_string()
+                        } else {
+                            resolved
+                        };
+                        let font_lower = current_font_name.to_lowercase();
+                        current_bold = font_lower.contains("bold");
+                        current_italic = font_lower.contains("italic")
+                            || font_lower.contains("oblique");
                         trace!(font_tag = %current_font_tag, font_size = current_font_size, "Font set");
                     }
                 }
-                "Td" | "TD" => {
+                "Td" => {
                     if op.operands.len() >= 2 {
                         let tx = Self::obj_to_f64(&op.operands[0]).unwrap_or(0.0);
                         let ty = Self::obj_to_f64(&op.operands[1]).unwrap_or(0.0);
+                        x += tx;
+                        y += ty;
+                        tm_x = x;
+                        tm_y = y;
+                    }
+                }
+                "TD" => {
+                    // TD is equivalent to: -ty TL, tx ty Td
+                    if op.operands.len() >= 2 {
+                        let tx = Self::obj_to_f64(&op.operands[0]).unwrap_or(0.0);
+                        let ty = Self::obj_to_f64(&op.operands[1]).unwrap_or(0.0);
+                        text_leading = -ty;
                         x += tx;
                         y += ty;
                         tm_x = x;
@@ -366,84 +620,51 @@ impl PdfExtractor {
                     }
                 }
                 "T*" => {
-                    // Move to start of next line (uses TL value; approximate)
-                    y -= current_font_size * 1.2;
+                    let lead = if text_leading != 0.0 {
+                        text_leading
+                    } else {
+                        current_font_size * DEFAULT_LINE_HEIGHT
+                    };
+                    y -= lead;
                     tm_y = y;
                 }
                 "Tj" => {
-                    if let Some(text) = Self::extract_tj_text(&op.operands) {
-                        let trimmed = text.trim();
-                        if !trimmed.is_empty() {
-                            let resolved = font_map
-                                .get(current_font_tag.as_str())
-                                .cloned()
-                                .unwrap_or_else(|| current_font_tag.clone());
-                            let font_name = if resolved.is_empty() {
-                                "Unknown".to_string()
-                            } else {
-                                resolved
-                            };
-                            elements.push(RawElement::Text(RawTextBlock {
-                                text: trimmed.to_string(),
-                                x: tm_x,
-                                y: tm_y,
-                                font_size: current_font_size.abs(),
-                                font_name,
-                            }));
-                        }
+                    let cmap = cmap_tables.get(current_font_tag.as_str());
+                    if let Some(text) = Self::extract_tj_text_decoded(&op.operands, cmap) {
+                        Self::emit_text_block(
+                            text, &current_font_name, current_font_size,
+                            current_bold, current_italic,
+                            tm_x, tm_y, &mut pending_space, &mut elements,
+                        );
                     }
                 }
                 "TJ" => {
-                    if let Some(text) = Self::extract_tj_array_text(&op.operands) {
-                        let trimmed = text.trim();
-                        if !trimmed.is_empty() {
-                            let resolved = font_map
-                                .get(current_font_tag.as_str())
-                                .cloned()
-                                .unwrap_or_else(|| current_font_tag.clone());
-                            let font_name = if resolved.is_empty() {
-                                "Unknown".to_string()
-                            } else {
-                                resolved
-                            };
-                            elements.push(RawElement::Text(RawTextBlock {
-                                text: trimmed.to_string(),
-                                x: tm_x,
-                                y: tm_y,
-                                font_size: current_font_size.abs(),
-                                font_name,
-                            }));
-                        }
+                    let cmap = cmap_tables.get(current_font_tag.as_str());
+                    if let Some(text) = Self::extract_tj_array_text_decoded(&op.operands, cmap) {
+                        Self::emit_text_block(
+                            text, &current_font_name, current_font_size,
+                            current_bold, current_italic,
+                            tm_x, tm_y, &mut pending_space, &mut elements,
+                        );
                     }
                 }
                 "'" | "\"" => {
-                    // ' moves to next line then shows text; " sets word/char spacing then shows
-                    y -= current_font_size * 1.2;
+                    // ' = T* then Tj; " = set spacing then T* then Tj
+                    let lead = if text_leading != 0.0 {
+                        text_leading
+                    } else {
+                        current_font_size * DEFAULT_LINE_HEIGHT
+                    };
+                    y -= lead;
                     tm_y = y;
-                    // The last operand is the string
-                    if let Some(last) = op.operands.last() {
-                        if let Ok(bytes) = last.as_str() {
-                            let text = String::from_utf8_lossy(bytes);
-                            let trimmed = text.trim();
-                            if !trimmed.is_empty() {
-                                let resolved = font_map
-                                    .get(current_font_tag.as_str())
-                                    .cloned()
-                                    .unwrap_or_else(|| current_font_tag.clone());
-                                let font_name = if resolved.is_empty() {
-                                    "Unknown".to_string()
-                                } else {
-                                    resolved
-                                };
-                                elements.push(RawElement::Text(RawTextBlock {
-                                    text: trimmed.to_string(),
-                                    x: tm_x,
-                                    y: tm_y,
-                                    font_size: current_font_size.abs(),
-                                    font_name,
-                                }));
-                            }
-                        }
+                    let cmap = cmap_tables.get(current_font_tag.as_str());
+                    if let Some(Object::String(bytes, _)) = op.operands.last() {
+                        let text = Self::decode_text_with_cmap(bytes, cmap);
+                        Self::emit_text_block(
+                            text, &current_font_name, current_font_size,
+                            current_bold, current_italic,
+                            tm_x, tm_y, &mut pending_space, &mut elements,
+                        );
                     }
                 }
                 _ => {}
@@ -451,6 +672,47 @@ impl PdfExtractor {
         }
 
         Ok(RawPage { elements })
+    }
+
+    /// Process decoded text from a Tj/TJ/"'"/"\"" operator: handle pending_space,
+    /// compute estimated width, and emit a RawTextBlock into the elements list.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_text_block(
+        text: String,
+        font_name: &str,
+        font_size: f64,
+        is_bold: bool,
+        is_italic: bool,
+        x: f64,
+        y: f64,
+        pending_space: &mut bool,
+        elements: &mut Vec<RawElement>,
+    ) {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            if text.contains(' ') {
+                *pending_space = true;
+            }
+            return;
+        }
+        let final_text = if *pending_space {
+            *pending_space = false;
+            format!(" {}", trimmed)
+        } else {
+            trimmed.to_string()
+        };
+        let char_count = final_text.trim().chars().count() as f64;
+        let estimated_width = char_count * font_size.abs() * AVG_CHAR_WIDTH_RATIO;
+        elements.push(RawElement::Text(RawTextBlock {
+            text: final_text,
+            x,
+            y,
+            end_x: x + estimated_width,
+            font_size: font_size.abs(),
+            has_bold: is_bold,
+            has_italic: is_italic,
+            font_name: font_name.to_string(),
+        }));
     }
 
     /// Build a mapping from font resource names (e.g. "F1") to their /BaseFont names.
@@ -484,6 +746,174 @@ impl PdfExtractor {
         map
     }
 
+    /// Build ToUnicode CMap lookup tables for all fonts on a page.
+    /// Returns a map from font tag (e.g. "F9") to a CID→Unicode mapping.
+    fn build_cmap_tables(
+        doc: &Document,
+        page_id: ObjectId,
+    ) -> BTreeMap<String, HashMap<u16, String>> {
+        let mut cmaps = BTreeMap::new();
+
+        let page_obj = match doc.get_object(page_id) {
+            Ok(o) => o,
+            Err(_) => return cmaps,
+        };
+        let page_dict = match page_obj.as_dict() {
+            Ok(d) => d,
+            Err(_) => return cmaps,
+        };
+        let resources = match page_dict.get(b"Resources") {
+            Ok(obj) => Self::resolve_object(doc, obj),
+            Err(_) => return cmaps,
+        };
+        let res_dict = match resources.as_dict() {
+            Ok(d) => d,
+            Err(_) => return cmaps,
+        };
+        let font_obj = match res_dict.get(b"Font") {
+            Ok(obj) => Self::resolve_object(doc, obj),
+            Err(_) => return cmaps,
+        };
+        let font_dict = match font_obj.as_dict() {
+            Ok(d) => d,
+            Err(_) => return cmaps,
+        };
+
+        for (name, value) in font_dict.iter() {
+            let tag = String::from_utf8_lossy(name).into_owned();
+            let font = Self::resolve_object(doc, value);
+            if let Ok(fd) = font.as_dict() {
+                if let Ok(Object::Reference(id)) = fd.get(b"ToUnicode") {
+                    if let Ok(Object::Stream(ref stream)) = doc.get_object(*id) {
+                        if let Ok(data) = stream.decompressed_content() {
+                            let cmap_text = String::from_utf8_lossy(&data);
+                            let table = Self::parse_cmap(&cmap_text);
+                            if !table.is_empty() {
+                                debug!(font = %tag, entries = table.len(), "CMap parsed");
+                                cmaps.insert(tag, table);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        cmaps
+    }
+
+    /// Parse a ToUnicode CMap stream into a CID → Unicode string mapping.
+    fn parse_cmap(cmap: &str) -> HashMap<u16, String> {
+        let mut map = HashMap::new();
+        let lines: Vec<&str> = cmap.lines().collect();
+        let mut i = 0;
+
+        while i < lines.len() {
+            let line = lines[i].trim();
+
+            // Parse beginbfchar sections: <CID> <Unicode>
+            if line.ends_with("beginbfchar") {
+                i += 1;
+                while i < lines.len() {
+                    let l = lines[i].trim();
+                    if l == "endbfchar" {
+                        break;
+                    }
+                    // Format: <XXXX> <YYYY> or <XX> <YYYY>
+                    let parts: Vec<&str> = l.split('>').collect();
+                    if parts.len() >= 2 {
+                        let cid = Self::parse_hex_value(parts[0]);
+                        let unicode = Self::parse_hex_to_unicode(parts[1]);
+                        if let (Some(c), Some(u)) = (cid, unicode) {
+                            map.insert(c, u);
+                        }
+                    }
+                    i += 1;
+                }
+            }
+
+            // Parse beginbfrange sections: <start> <end> <unicode_start>
+            if line.ends_with("beginbfrange") {
+                i += 1;
+                while i < lines.len() {
+                    let l = lines[i].trim();
+                    if l == "endbfrange" {
+                        break;
+                    }
+                    let parts: Vec<&str> = l.split('>').collect();
+                    if parts.len() >= 3 {
+                        let start = Self::parse_hex_value(parts[0]);
+                        let end = Self::parse_hex_value(parts[1]);
+                        let unicode_start = Self::parse_hex_value(parts[2]);
+                        if let (Some(s), Some(e), Some(u)) = (start, end, unicode_start) {
+                            for offset in 0..=(e.saturating_sub(s)) {
+                                let cid = s + offset;
+                                let unicode_val = u + offset;
+                                if let Some(ch) = char::from_u32(unicode_val as u32) {
+                                    map.insert(cid, ch.to_string());
+                                }
+                            }
+                        }
+                    }
+                    i += 1;
+                }
+            }
+
+            i += 1;
+        }
+
+        map
+    }
+
+    /// Parse a hex value like "<0026>" or "<26>" into a u16.
+    fn parse_hex_value(s: &str) -> Option<u16> {
+        let hex = s.trim().trim_start_matches('<');
+        u16::from_str_radix(hex.trim(), 16).ok()
+    }
+
+    /// Parse a hex Unicode value like "<0043>" into a Unicode string.
+    fn parse_hex_to_unicode(s: &str) -> Option<String> {
+        let hex = s.trim().trim_start_matches('<');
+        let val = u32::from_str_radix(hex.trim(), 16).ok()?;
+        char::from_u32(val).map(|c| c.to_string())
+    }
+
+    /// Decode raw bytes from a Tj/TJ string using the CMap for the current font.
+    /// For Identity-H encoded fonts, bytes are 2-byte CIDs.
+    fn decode_text_with_cmap(
+        raw_bytes: &[u8],
+        cmap: Option<&HashMap<u16, String>>,
+    ) -> String {
+        match cmap {
+            Some(table) if !table.is_empty() => {
+                let mut result = String::new();
+                // Identity-H: 2-byte CIDs
+                let chunks = raw_bytes.chunks(2);
+                for chunk in chunks {
+                    let cid = if chunk.len() == 2 {
+                        u16::from_be_bytes([chunk[0], chunk[1]])
+                    } else {
+                        chunk[0] as u16
+                    };
+                    if let Some(unicode) = table.get(&cid) {
+                        result.push_str(unicode);
+                    } else {
+                        // Fallback: try as single byte if CID not found
+                        if cid < 128 {
+                            if let Some(ch) = char::from_u32(cid as u32) {
+                                result.push(ch);
+                            }
+                        }
+                    }
+                }
+                result
+            }
+            _ => {
+                // No CMap — use plain UTF-8 (works for standard encoding)
+                String::from_utf8_lossy(raw_bytes).into_owned()
+            }
+        }
+    }
+
     /// Convert an lopdf Object (Integer or Real) to f64.
     fn obj_to_f64(obj: &Object) -> Option<f64> {
         match obj {
@@ -493,7 +923,8 @@ impl PdfExtractor {
         }
     }
 
-    /// Extract text from a Tj operand list.
+    /// Extract text from a Tj operand list (no CMap, for tests/backward compat).
+    #[cfg(test)]
     fn extract_tj_text(operands: &[Object]) -> Option<String> {
         for operand in operands {
             if let Object::String(bytes, _) = operand {
@@ -503,7 +934,8 @@ impl PdfExtractor {
         None
     }
 
-    /// Extract text from a TJ array operand (array of strings and kerning numbers).
+    /// Extract text from a TJ array operand (no CMap, for tests/backward compat).
+    #[cfg(test)]
     fn extract_tj_array_text(operands: &[Object]) -> Option<String> {
         for operand in operands {
             if let Object::Array(items) = operand {
@@ -525,8 +957,47 @@ impl PdfExtractor {
         None
     }
 
+    /// Extract and decode text from Tj operand using CMap.
+    fn extract_tj_text_decoded(
+        operands: &[Object],
+        cmap: Option<&HashMap<u16, String>>,
+    ) -> Option<String> {
+        for operand in operands {
+            if let Object::String(bytes, _) = operand {
+                return Some(Self::decode_text_with_cmap(bytes, cmap));
+            }
+        }
+        None
+    }
+
+    /// Extract and decode text from TJ array operand using CMap.
+    fn extract_tj_array_text_decoded(
+        operands: &[Object],
+        cmap: Option<&HashMap<u16, String>>,
+    ) -> Option<String> {
+        for operand in operands {
+            if let Object::Array(items) = operand {
+                let mut result = String::new();
+                for item in items {
+                    match item {
+                        Object::String(bytes, _) => {
+                            result.push_str(&Self::decode_text_with_cmap(bytes, cmap));
+                        }
+                        Object::Integer(i) if *i < -100 => {
+                            result.push(' ');
+                        }
+                        _ => {}
+                    }
+                }
+                return Some(result);
+            }
+        }
+        None
+    }
+
     /// Fallback: use doc.extract_text() when content stream parsing fails.
     fn extract_page_fallback(doc: &Document, page_num: u32) -> Result<RawPage, ConvertError> {
+        tracing::warn!(page = page_num, "Using fallback text extraction — table detection may be degraded");
         let mut elements = Vec::new();
 
         if let Ok(content) = doc.extract_text(&[page_num]) {
@@ -535,12 +1006,16 @@ impl PdfExtractor {
             for line in lines {
                 let trimmed = line.trim();
                 if !trimmed.is_empty() {
+                    let estimated_width = trimmed.chars().count() as f64 * 12.0 * 0.5;
                     elements.push(RawElement::Text(RawTextBlock {
                         text: trimmed.to_string(),
                         x: 72.0,
                         y: y_pos,
+                        end_x: 72.0 + estimated_width,
                         font_size: 12.0,
                         font_name: "Unknown".to_string(),
+                        has_bold: false,
+                        has_italic: false,
                     }));
                     y_pos -= 14.0;
                 }
@@ -561,8 +1036,11 @@ mod tests {
             text: "Hello".to_string(),
             x: 72.0,
             y: 700.0,
+            end_x: 72.0 + 5.0 * 12.0 * 0.5,
             font_size: 12.0,
             font_name: "Helvetica".to_string(),
+            has_bold: false,
+            has_italic: false,
         };
         assert_eq!(block.text, "Hello");
         assert_eq!(block.font_size, 12.0);
@@ -674,5 +1152,131 @@ mod tests {
         assert!(meta.title.is_none());
         assert!(meta.author.is_none());
         assert!(meta.date.is_none());
+    }
+
+    #[test]
+    fn test_merge_blocks_within_cell() {
+        // Phase 1 merge: gap=10 < 2.0 * avg_char_width(6) = 12 → merge with space
+        let elements = vec![
+            RawElement::Text(RawTextBlock {
+                text: "Hello".to_string(),
+                x: 50.0,
+                y: 100.0,
+                end_x: 110.0,
+                font_size: 12.0,
+                font_name: "Helvetica".to_string(),
+                has_bold: false,
+                has_italic: false,
+            }),
+            RawElement::Text(RawTextBlock {
+                text: "World".to_string(),
+                x: 120.0,
+                y: 100.0,
+                end_x: 150.0,
+                font_size: 12.0,
+                font_name: "Helvetica".to_string(),
+                has_bold: false,
+                has_italic: false,
+            }),
+        ];
+        let merged = PdfExtractor::merge_text_blocks(elements);
+        assert_eq!(merged.len(), 1);
+        if let RawElement::Text(b) = &merged[0] {
+            assert_eq!(b.text, "Hello World");
+        } else {
+            panic!("Expected Text element");
+        }
+    }
+
+    #[test]
+    fn test_merge_blocks_column_gap_stays_separate() {
+        // Phase 1 merge: gap=290 >> 2.0 * avg_char_width(6) = 12 → column boundary, NOT merged
+        let elements = vec![
+            RawElement::Text(RawTextBlock {
+                text: "Col1".to_string(),
+                x: 50.0,
+                y: 100.0,
+                end_x: 80.0,
+                font_size: 12.0,
+                font_name: "Helvetica".to_string(),
+                has_bold: false,
+                has_italic: false,
+            }),
+            RawElement::Text(RawTextBlock {
+                text: "Col2".to_string(),
+                x: 400.0,
+                y: 100.0,
+                end_x: 430.0,
+                font_size: 12.0,
+                font_name: "Helvetica".to_string(),
+                has_bold: false,
+                has_italic: false,
+            }),
+        ];
+        let merged = PdfExtractor::merge_text_blocks(elements);
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn test_assemble_lines_gap_based_space() {
+        // Phase 2: moderate gap → merge with space
+        let elements = vec![
+            RawElement::Text(RawTextBlock {
+                text: "Hello".to_string(),
+                x: 50.0,
+                y: 100.0,
+                end_x: 110.0,
+                font_size: 12.0,
+                font_name: "Helvetica".to_string(),
+                has_bold: false,
+                has_italic: false,
+            }),
+            RawElement::Text(RawTextBlock {
+                text: "World".to_string(),
+                x: 120.0,
+                y: 100.0,
+                end_x: 150.0,
+                font_size: 12.0,
+                font_name: "Helvetica".to_string(),
+                has_bold: false,
+                has_italic: false,
+            }),
+        ];
+        let merged = PdfExtractor::assemble_lines(elements);
+        assert_eq!(merged.len(), 1);
+        if let RawElement::Text(b) = &merged[0] {
+            assert_eq!(b.text, "Hello World");
+        } else {
+            panic!("Expected Text element");
+        }
+    }
+
+    #[test]
+    fn test_assemble_lines_large_gap_separates() {
+        // Phase 2: large gap → separate blocks
+        let elements = vec![
+            RawElement::Text(RawTextBlock {
+                text: "Col1".to_string(),
+                x: 50.0,
+                y: 100.0,
+                end_x: 80.0,
+                font_size: 12.0,
+                font_name: "Helvetica".to_string(),
+                has_bold: false,
+                has_italic: false,
+            }),
+            RawElement::Text(RawTextBlock {
+                text: "Col2".to_string(),
+                x: 400.0,
+                y: 100.0,
+                end_x: 430.0,
+                font_size: 12.0,
+                font_name: "Helvetica".to_string(),
+                has_bold: false,
+                has_italic: false,
+            }),
+        ];
+        let merged = PdfExtractor::assemble_lines(elements);
+        assert_eq!(merged.len(), 2);
     }
 }

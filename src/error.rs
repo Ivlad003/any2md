@@ -15,6 +15,12 @@ pub enum ConvertError {
     #[error("Image extraction failed: {0}")]
     ImageExtractionFailed(String),
 
+    #[error("Network error: {0}")]
+    NetworkError(String),
+
+    #[error("Transcription error: {0}")]
+    TranscriptionError(String),
+
     #[error(transparent)]
     IoError(#[from] std::io::Error),
 }

@@ -1,4 +1,4 @@
-use crate::converter::pdf::classifier::{BlockType, ClassifiedElement, Classifier};
+use crate::converter::pdf::classifier::{BlockType, ClassifiedElement};
 use crate::converter::pdf::extractor::RawTextBlock;
 use crate::model::document::*;
 
@@ -27,13 +27,37 @@ impl Assembler {
                     });
                     i += 1;
                 }
+                ClassifiedElement::PreBuilt(el) => {
+                    elements.push(el.clone());
+                    i += 1;
+                }
                 ClassifiedElement::Text(block, block_type) => match block_type {
                     BlockType::Heading(level) => {
-                        elements.push(Element::Heading {
-                            level: *level,
-                            text: block.text.clone(),
-                        });
+                        let mut heading_text = block.text.clone();
+                        let heading_level = *level;
+                        let mut last_y = block.y;
+                        let last_font_size = block.font_size;
                         i += 1;
+                        // Merge consecutive headings at the same level (wrapped text)
+                        while i < elems.len() {
+                            if let ClassifiedElement::Text(next_block, BlockType::Heading(next_level)) = &elems[i] {
+                                if *next_level == heading_level {
+                                    let y_gap = (next_block.y - last_y).abs();
+                                    if y_gap < last_font_size * 2.0 {
+                                        heading_text.push(' ');
+                                        heading_text.push_str(&next_block.text);
+                                        last_y = next_block.y;
+                                        i += 1;
+                                        continue;
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                        elements.push(Element::Heading {
+                            level: heading_level,
+                            text: heading_text,
+                        });
                     }
                     BlockType::CodeBlock => {
                         let mut code_lines = vec![block.text.clone()];
@@ -75,10 +99,37 @@ impl Assembler {
                         elements.push(Element::List { ordered, items });
                     }
                     BlockType::Paragraph => {
-                        elements.push(Element::Paragraph {
-                            text: Self::rich_text_from_block(&block.text, block),
-                        });
+                        let mut para_text = block.text.clone();
+                        let mut current_y = block.y;
                         i += 1;
+
+                        // Merge URL continuations: if text contains "://" and ends with '-',
+                        // the next paragraph at same X is likely a wrapped URL
+                        while i < elems.len() {
+                            if let ClassifiedElement::Text(next_block, BlockType::Paragraph) =
+                                &elems[i]
+                            {
+                                let y_gap = (next_block.y - current_y).abs();
+                                let same_x = (next_block.x - block.x).abs() < 5.0;
+                                let line_height = block.font_size * 1.5;
+
+                                if same_x
+                                    && y_gap < line_height
+                                    && para_text.contains("://")
+                                    && para_text.ends_with('-')
+                                {
+                                    para_text.push_str(&next_block.text);
+                                    current_y = next_block.y;
+                                    i += 1;
+                                    continue;
+                                }
+                            }
+                            break;
+                        }
+
+                        elements.push(Element::Paragraph {
+                            text: Self::rich_text_from_block(&para_text, block),
+                        });
                     }
                 },
             }
@@ -123,8 +174,8 @@ impl Assembler {
         RichText {
             segments: vec![TextSegment {
                 text: text.to_string(),
-                bold: Classifier::is_bold(&block.font_name),
-                italic: Classifier::is_italic(&block.font_name),
+                bold: block.has_bold,
+                italic: block.has_italic,
                 code: false,
                 link: None,
             }],
@@ -138,22 +189,31 @@ mod tests {
     use crate::converter::pdf::extractor::RawTextBlock;
 
     fn make_block(text: &str) -> RawTextBlock {
+        let end_x = 72.0 + text.chars().count() as f64 * 12.0 * 0.5;
         RawTextBlock {
             text: text.to_string(),
             x: 72.0,
             y: 700.0,
+            end_x,
             font_size: 12.0,
             font_name: "Helvetica".to_string(),
+            has_bold: false,
+            has_italic: false,
         }
     }
 
     fn make_block_with_font(text: &str, font_name: &str) -> RawTextBlock {
+        let end_x = 72.0 + text.chars().count() as f64 * 12.0 * 0.5;
+        let font_lower = font_name.to_lowercase();
         RawTextBlock {
             text: text.to_string(),
             x: 72.0,
             y: 700.0,
+            end_x,
             font_size: 12.0,
             font_name: font_name.to_string(),
+            has_bold: font_lower.contains("bold"),
+            has_italic: font_lower.contains("italic") || font_lower.contains("oblique"),
         }
     }
 
@@ -330,6 +390,43 @@ mod tests {
     }
 
     #[test]
+    fn test_consecutive_headings_same_level_merged() {
+        let b1 = RawTextBlock {
+            text: "Client - Predefined product list (To review by".to_string(),
+            x: 50.0,
+            y: 700.0,
+            end_x: 600.0,
+            font_size: 26.7,
+            font_name: "Helvetica".to_string(),
+            has_bold: false,
+            has_italic: false,
+        };
+        let b2 = RawTextBlock {
+            text: "PICTO)".to_string(),
+            x: 50.0,
+            y: 720.0,
+            end_x: 130.0,
+            font_size: 26.7,
+            font_name: "Helvetica".to_string(),
+            has_bold: false,
+            has_italic: false,
+        };
+        let blocks = vec![
+            ClassifiedElement::Text(b1, BlockType::Heading(2)),
+            ClassifiedElement::Text(b2, BlockType::Heading(2)),
+        ];
+        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        assert_eq!(doc.pages[0].elements.len(), 1);
+        if let Element::Heading { level, text } = &doc.pages[0].elements[0] {
+            assert_eq!(*level, 2);
+            assert!(text.contains("Client"));
+            assert!(text.contains("PICTO)"));
+        } else {
+            panic!("Expected merged heading");
+        }
+    }
+
+    #[test]
     fn test_assemble_image_element() {
         use crate::converter::pdf::extractor::RawImage;
         let blocks = vec![
@@ -357,5 +454,74 @@ mod tests {
             &doc.pages[0].elements[2],
             Element::Paragraph { .. }
         ));
+    }
+
+    #[test]
+    fn test_url_continuation_merged_across_line_break() {
+        let b1 = RawTextBlock {
+            text: "https://example.com/very/long/path/that-".to_string(),
+            x: 72.0,
+            y: 700.0,
+            end_x: 500.0,
+            font_size: 12.0,
+            font_name: "Helvetica".to_string(),
+            has_bold: false,
+            has_italic: false,
+        };
+        let b2 = RawTextBlock {
+            text: "continues/here".to_string(),
+            x: 72.0,
+            y: 714.0, // within 1.5 * font_size = 18.0
+            end_x: 200.0,
+            font_size: 12.0,
+            font_name: "Helvetica".to_string(),
+            has_bold: false,
+            has_italic: false,
+        };
+        let blocks = vec![
+            ClassifiedElement::Text(b1, BlockType::Paragraph),
+            ClassifiedElement::Text(b2, BlockType::Paragraph),
+        ];
+        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        assert_eq!(doc.pages[0].elements.len(), 1);
+        if let Element::Paragraph { text } = &doc.pages[0].elements[0] {
+            assert_eq!(
+                text.segments[0].text,
+                "https://example.com/very/long/path/that-continues/here"
+            );
+        } else {
+            panic!("Expected merged Paragraph");
+        }
+    }
+
+    #[test]
+    fn test_url_continuation_not_merged_without_protocol() {
+        // Without "://" the paragraphs should NOT be merged even if text ends with '-'
+        let b1 = RawTextBlock {
+            text: "some regular text that ends with a hyphen-".to_string(),
+            x: 72.0,
+            y: 700.0,
+            end_x: 500.0,
+            font_size: 12.0,
+            font_name: "Helvetica".to_string(),
+            has_bold: false,
+            has_italic: false,
+        };
+        let b2 = RawTextBlock {
+            text: "ated word".to_string(),
+            x: 72.0,
+            y: 714.0,
+            end_x: 200.0,
+            font_size: 12.0,
+            font_name: "Helvetica".to_string(),
+            has_bold: false,
+            has_italic: false,
+        };
+        let blocks = vec![
+            ClassifiedElement::Text(b1, BlockType::Paragraph),
+            ClassifiedElement::Text(b2, BlockType::Paragraph),
+        ];
+        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        assert_eq!(doc.pages[0].elements.len(), 2);
     }
 }

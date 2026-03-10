@@ -1,4 +1,7 @@
+use any2md::converter::audio::{AudioConverter, AudioEngine, AudioOptions};
+use any2md::converter::image_ocr::{ImageOcrConverter, OcrEngine};
 use any2md::converter::pdf::PdfConverter;
+use any2md::converter::web::WebConverter;
 use any2md::converter::ConverterRegistry;
 use any2md::model::options::{ConvertOptions, ImageMode, PageMode};
 use any2md::renderer::markdown::MarkdownRenderer;
@@ -10,8 +13,8 @@ use tracing::{debug, info};
 #[derive(Parser)]
 #[command(name = "any2md", about = "Convert files to Markdown")]
 struct Cli {
-    /// Input file path
-    input: PathBuf,
+    /// Input file path (not required when using --url or --audio --live)
+    input: Option<PathBuf>,
 
     /// Output file path (default: <input_name>.md)
     #[arg(short, long)]
@@ -32,6 +35,26 @@ struct Cli {
     /// Path for debug log file (default: any2md.log)
     #[arg(long, default_value = "any2md.log")]
     log_file: PathBuf,
+
+    /// Convert a URL to markdown
+    #[arg(long)]
+    url: Option<String>,
+
+    /// Audio mode: transcribe audio file or live mic input
+    #[arg(long)]
+    audio: bool,
+
+    /// Live microphone recording mode (use with --audio)
+    #[arg(long)]
+    live: bool,
+
+    /// Transcription/OCR engine: local or cloud
+    #[arg(long, default_value = "local")]
+    engine: String,
+
+    /// Path to Whisper model file (default: auto-download to ~/.any2md/models/)
+    #[arg(long)]
+    model: Option<PathBuf>,
 }
 
 fn setup_logging(debug: bool, log_file: &Path) {
@@ -100,8 +123,72 @@ fn main() {
         }
     };
 
+    let audio_engine = match cli.engine.as_str() {
+        "local" => AudioEngine::Local,
+        "cloud" => AudioEngine::Cloud,
+        other => {
+            eprintln!(
+                "Error: unknown engine '{}'. Use 'local' or 'cloud'.",
+                other
+            );
+            process::exit(1);
+        }
+    };
+
+    // --- Dispatch: Audio live mode (no file input) ---
+    if cli.audio && cli.live {
+        eprintln!("Recording from microphone... Press Enter to stop.");
+        let audio_opts = AudioOptions {
+            engine: audio_engine,
+            model_path: cli.model,
+        };
+        match AudioConverter::convert_live(&audio_opts) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // --- Dispatch: URL mode ---
+    if let Some(ref url) = cli.url {
+        let output_path = cli.output.unwrap_or_else(|| PathBuf::from("page.md"));
+        let image_output_dir = output_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("images");
+        let options = ConvertOptions {
+            image_mode,
+            page_mode,
+            image_output_dir,
+        };
+
+        eprintln!("Fetching {}...", url);
+        let doc = match WebConverter::convert_url(url, &options) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                process::exit(1);
+            }
+        };
+
+        render_and_write(&doc, &options, &output_path);
+        return;
+    }
+
+    // --- All other modes require an input file ---
+    let input = match cli.input {
+        Some(ref p) => p,
+        None => {
+            eprintln!("Error: input file is required (or use --url / --audio --live)");
+            process::exit(1);
+        }
+    };
+
     let output_path = cli.output.unwrap_or_else(|| {
-        let stem = cli.input.file_stem().unwrap_or_default();
+        let stem = input.file_stem().unwrap_or_default();
         PathBuf::from(format!("{}.md", stem.to_string_lossy()))
     });
 
@@ -116,13 +203,58 @@ fn main() {
         image_output_dir,
     };
 
-    debug!(input = %cli.input.display(), "Starting conversion");
+    debug!(input = %input.display(), "Starting conversion");
     debug!(?options, "Conversion options");
 
+    // --- Dispatch: Audio file mode ---
+    if cli.audio {
+        let audio_opts = AudioOptions {
+            engine: audio_engine,
+            model_path: cli.model,
+        };
+
+        eprintln!("Transcribing {}...", input.display());
+        let doc = match AudioConverter::convert_file(input, &audio_opts) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                process::exit(1);
+            }
+        };
+
+        render_and_write(&doc, &options, &output_path);
+        return;
+    }
+
+    // --- Dispatch: File-based converters (PDF, Image OCR) ---
+    let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    // Check if this is an image for OCR (handle engine flag)
+    let image_extensions = ["png", "jpg", "jpeg", "tiff", "bmp", "webp"];
+    let is_image = image_extensions
+        .iter()
+        .any(|e| e.eq_ignore_ascii_case(ext));
+    if is_image {
+        let ocr_engine = match cli.engine.as_str() {
+            "local" => OcrEngine::Local,
+            "cloud" => OcrEngine::Cloud,
+            _ => OcrEngine::Local,
+        };
+        eprintln!("Converting {} (OCR {:?})...", input.display(), ocr_engine);
+        let doc = match ImageOcrConverter::convert_with_engine(input, &options, ocr_engine) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                process::exit(1);
+            }
+        };
+        render_and_write(&doc, &options, &output_path);
+        return;
+    }
+
+    // Other file-based converters (PDF, etc.)
     let mut registry = ConverterRegistry::new();
     registry.register(Box::new(PdfConverter));
-
-    let ext = cli.input.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     let converter = match registry.find_by_extension(ext) {
         Some(c) => c,
@@ -137,9 +269,9 @@ fn main() {
         extension = ext,
         "Found converter"
     );
-    eprintln!("Converting {}...", cli.input.display());
+    eprintln!("Converting {}...", input.display());
 
-    let doc = match converter.convert(&cli.input, &options) {
+    let doc = match converter.convert(input, &options) {
         Ok(d) => {
             info!(
                 pages = d.pages.len(),
@@ -154,9 +286,13 @@ fn main() {
         }
     };
 
+    render_and_write(&doc, &options, &output_path);
+}
+
+fn render_and_write(doc: &any2md::model::document::Document, options: &ConvertOptions, output_path: &Path) {
     debug!("Rendering document to markdown");
 
-    let markdown = match MarkdownRenderer::render(&doc, &options) {
+    let markdown = match MarkdownRenderer::render(doc, options) {
         Ok(md) => {
             debug!(output_bytes = md.len(), "Rendering complete");
             md
@@ -167,7 +303,7 @@ fn main() {
         }
     };
 
-    match std::fs::write(&output_path, &markdown) {
+    match std::fs::write(output_path, &markdown) {
         Ok(_) => {
             info!(output = %output_path.display(), "Written successfully");
             eprintln!("Written to {}", output_path.display());

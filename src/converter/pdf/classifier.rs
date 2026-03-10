@@ -1,4 +1,5 @@
 use crate::converter::pdf::extractor::{RawElement, RawImage, RawPage, RawTextBlock};
+use crate::model::document::Element;
 use tracing::{debug, trace};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -13,6 +14,7 @@ pub enum BlockType {
 pub enum ClassifiedElement {
     Text(RawTextBlock, BlockType),
     Image(RawImage),
+    PreBuilt(Element),
 }
 
 pub struct Classifier;
@@ -158,12 +160,16 @@ mod tests {
     use super::*;
 
     fn make_block(text: &str, font_size: f64, font_name: &str) -> RawTextBlock {
+        let end_x = 72.0 + text.chars().count() as f64 * font_size * 0.5;
         RawTextBlock {
             text: text.to_string(),
             x: 72.0,
             y: 700.0,
+            end_x,
             font_size,
             font_name: font_name.to_string(),
+            has_bold: false,
+            has_italic: false,
         }
     }
 
@@ -176,7 +182,7 @@ mod tests {
     fn get_block_type(el: &ClassifiedElement) -> &BlockType {
         match el {
             ClassifiedElement::Text(_, bt) => bt,
-            ClassifiedElement::Image(_) => panic!("Expected Text element"),
+            _ => panic!("Expected Text element"),
         }
     }
 

@@ -1,4 +1,7 @@
+pub mod audio;
+pub mod image_ocr;
 pub mod pdf;
+pub mod web;
 
 use crate::error::ConvertError;
 use crate::model::document::Document;
