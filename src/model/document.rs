@@ -18,14 +18,33 @@ pub struct Page {
 
 #[derive(Debug, Clone)]
 pub enum Element {
-    Heading { level: u8, text: String },
-    Paragraph { text: RichText },
-    CodeBlock { language: Option<String>, code: String },
-    List { ordered: bool, items: Vec<ListItem> },
-    Table { headers: Vec<String>, rows: Vec<Vec<String>> },
-    Image { data: Vec<u8>, alt: Option<String> },
+    Heading {
+        level: u8,
+        text: String,
+    },
+    Paragraph {
+        text: RichText,
+    },
+    CodeBlock {
+        language: Option<String>,
+        code: String,
+    },
+    List {
+        ordered: bool,
+        items: Vec<ListItem>,
+    },
+    Table {
+        headers: Vec<String>,
+        rows: Vec<Vec<String>>,
+    },
+    Image {
+        data: Vec<u8>,
+        alt: Option<String>,
+    },
     HorizontalRule,
-    BlockQuote { text: RichText },
+    BlockQuote {
+        text: RichText,
+    },
 }
 
 #[derive(Debug, Clone)]

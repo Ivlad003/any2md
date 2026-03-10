@@ -1,7 +1,7 @@
 use any2md::converter::{Converter, ConverterRegistry};
+use any2md::error::ConvertError;
 use any2md::model::document::*;
 use any2md::model::options::ConvertOptions;
-use any2md::error::ConvertError;
 use std::path::Path;
 
 struct MockConverter;

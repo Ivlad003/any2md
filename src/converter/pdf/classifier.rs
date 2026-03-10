@@ -1,4 +1,4 @@
-use crate::converter::pdf::extractor::{RawTextBlock, RawElement, RawPage};
+use crate::converter::pdf::extractor::{RawElement, RawPage, RawTextBlock};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BlockType {
@@ -47,7 +47,15 @@ impl Classifier {
     }
 
     fn is_code(block: &RawTextBlock) -> bool {
-        let mono_fonts = ["courier", "consolas", "menlo", "monaco", "monospace", "source code", "fira code"];
+        let mono_fonts = [
+            "courier",
+            "consolas",
+            "menlo",
+            "monaco",
+            "monospace",
+            "source code",
+            "fira code",
+        ];
         let font_lower = block.font_name.to_lowercase();
         mono_fonts.iter().any(|f| font_lower.contains(f))
     }
@@ -94,11 +102,11 @@ impl Classifier {
         }
     }
 
-    fn is_bold(font_name: &str) -> bool {
+    fn _is_bold(font_name: &str) -> bool {
         font_name.to_lowercase().contains("bold")
     }
 
-    fn is_italic(font_name: &str) -> bool {
+    fn _is_italic(font_name: &str) -> bool {
         let lower = font_name.to_lowercase();
         lower.contains("italic") || lower.contains("oblique")
     }

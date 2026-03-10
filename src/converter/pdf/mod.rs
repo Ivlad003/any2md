@@ -1,15 +1,15 @@
-pub mod extractor;
-pub mod classifier;
 pub mod assembler;
+pub mod classifier;
+pub mod extractor;
 
-use std::path::Path;
 use crate::converter::Converter;
+use crate::error::ConvertError;
 use crate::model::document::{Document, Metadata};
 use crate::model::options::ConvertOptions;
-use crate::error::ConvertError;
-use extractor::PdfExtractor;
-use classifier::Classifier;
 use assembler::Assembler;
+use classifier::Classifier;
+use extractor::PdfExtractor;
+use std::path::Path;
 
 pub struct PdfConverter;
 

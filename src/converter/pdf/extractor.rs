@@ -1,5 +1,5 @@
-use std::path::Path;
 use crate::error::ConvertError;
+use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct RawTextBlock {
@@ -35,9 +35,8 @@ impl PdfExtractor {
             return Err(ConvertError::FileNotFound(path.to_path_buf()));
         }
 
-        let doc = lopdf::Document::load(path).map_err(|e| {
-            ConvertError::CorruptedFile(format!("Failed to parse PDF: {}", e))
-        })?;
+        let doc = lopdf::Document::load(path)
+            .map_err(|e| ConvertError::CorruptedFile(format!("Failed to parse PDF: {}", e)))?;
 
         let mut pages = Vec::new();
         let page_count = doc.get_pages().len();

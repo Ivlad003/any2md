@@ -1,8 +1,8 @@
-use std::path::Path;
-use any2md::converter::Converter;
 use any2md::converter::pdf::PdfConverter;
+use any2md::converter::Converter;
 use any2md::model::options::ConvertOptions;
 use any2md::renderer::markdown::MarkdownRenderer;
+use std::path::Path;
 
 #[test]
 fn test_pdf_converter_nonexistent_file_returns_error() {
@@ -26,21 +26,33 @@ fn test_full_pipeline_with_document() {
         pages: vec![
             Page {
                 elements: vec![
-                    Element::Heading { level: 1, text: "Chapter 1".to_string() },
+                    Element::Heading {
+                        level: 1,
+                        text: "Chapter 1".to_string(),
+                    },
                     Element::Paragraph {
                         text: RichText {
                             segments: vec![
                                 TextSegment {
                                     text: "This is ".to_string(),
-                                    bold: false, italic: false, code: false, link: None,
+                                    bold: false,
+                                    italic: false,
+                                    code: false,
+                                    link: None,
                                 },
                                 TextSegment {
                                     text: "bold".to_string(),
-                                    bold: true, italic: false, code: false, link: None,
+                                    bold: true,
+                                    italic: false,
+                                    code: false,
+                                    link: None,
                                 },
                                 TextSegment {
                                     text: " text.".to_string(),
-                                    bold: false, italic: false, code: false, link: None,
+                                    bold: false,
+                                    italic: false,
+                                    code: false,
+                                    link: None,
                                 },
                             ],
                         },
@@ -53,11 +65,27 @@ fn test_full_pipeline_with_document() {
                         ordered: false,
                         items: vec![
                             ListItem {
-                                text: RichText { segments: vec![TextSegment { text: "Item A".to_string(), bold: false, italic: false, code: false, link: None }] },
+                                text: RichText {
+                                    segments: vec![TextSegment {
+                                        text: "Item A".to_string(),
+                                        bold: false,
+                                        italic: false,
+                                        code: false,
+                                        link: None,
+                                    }],
+                                },
                                 children: vec![],
                             },
                             ListItem {
-                                text: RichText { segments: vec![TextSegment { text: "Item B".to_string(), bold: false, italic: false, code: false, link: None }] },
+                                text: RichText {
+                                    segments: vec![TextSegment {
+                                        text: "Item B".to_string(),
+                                        bold: false,
+                                        italic: false,
+                                        code: false,
+                                        link: None,
+                                    }],
+                                },
                                 children: vec![],
                             },
                         ],
@@ -72,7 +100,15 @@ fn test_full_pipeline_with_document() {
                     },
                     Element::HorizontalRule,
                     Element::BlockQuote {
-                        text: RichText { segments: vec![TextSegment { text: "A wise quote".to_string(), bold: false, italic: false, code: false, link: None }] },
+                        text: RichText {
+                            segments: vec![TextSegment {
+                                text: "A wise quote".to_string(),
+                                bold: false,
+                                italic: false,
+                                code: false,
+                                link: None,
+                            }],
+                        },
                     },
                 ],
             },

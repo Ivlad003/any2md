@@ -1,7 +1,7 @@
 use crate::model::document::*;
 use crate::model::options::{ConvertOptions, ImageMode};
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 
 pub struct MarkdownRenderer;
 
@@ -114,7 +114,12 @@ impl MarkdownRenderer {
             } else {
                 "- ".to_string()
             };
-            out.push_str(&format!("{}{}{}\n", indent, marker, Self::render_rich_text(&item.text)));
+            out.push_str(&format!(
+                "{}{}{}\n",
+                indent,
+                marker,
+                Self::render_rich_text(&item.text)
+            ));
             if !item.children.is_empty() {
                 Self::render_list_items(&item.children, ordered, depth + 1, out);
             }
@@ -127,7 +132,13 @@ impl MarkdownRenderer {
         out.push_str(" |\n");
 
         out.push_str("| ");
-        out.push_str(&headers.iter().map(|_| "---").collect::<Vec<_>>().join(" | "));
+        out.push_str(
+            &headers
+                .iter()
+                .map(|_| "---")
+                .collect::<Vec<_>>()
+                .join(" | "),
+        );
         out.push_str(" |\n");
 
         for row in rows {
@@ -142,7 +153,10 @@ impl MarkdownRenderer {
         match opts.image_mode {
             ImageMode::Inline => {
                 let encoded = BASE64.encode(data);
-                out.push_str(&format!("![{}](data:image/png;base64,{})\n", alt_text, encoded));
+                out.push_str(&format!(
+                    "![{}](data:image/png;base64,{})\n",
+                    alt_text, encoded
+                ));
             }
             ImageMode::Extract => {
                 out.push_str(&format!("![{}]({})\n", alt_text, "image_placeholder"));

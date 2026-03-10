@@ -1,9 +1,9 @@
 pub mod pdf;
 
-use std::path::Path;
+use crate::error::ConvertError;
 use crate::model::document::Document;
 use crate::model::options::ConvertOptions;
-use crate::error::ConvertError;
+use std::path::Path;
 
 pub trait Converter {
     fn name(&self) -> &str;
@@ -13,6 +13,12 @@ pub trait Converter {
 
 pub struct ConverterRegistry {
     converters: Vec<Box<dyn Converter>>,
+}
+
+impl Default for ConverterRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ConverterRegistry {
@@ -30,7 +36,11 @@ impl ConverterRegistry {
         let ext_lower = ext.to_lowercase();
         self.converters
             .iter()
-            .find(|c| c.supported_extensions().iter().any(|e| e.to_lowercase() == ext_lower))
+            .find(|c| {
+                c.supported_extensions()
+                    .iter()
+                    .any(|e| e.to_lowercase() == ext_lower)
+            })
             .map(|c| c.as_ref())
     }
 }

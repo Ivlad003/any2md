@@ -63,16 +63,29 @@ fn test_rich_text_display() {
 #[test]
 fn test_all_element_variants() {
     let elements: Vec<Element> = vec![
-        Element::Heading { level: 1, text: "H1".to_string() },
-        Element::Paragraph { text: RichText { segments: vec![] } },
-        Element::CodeBlock { language: Some("rust".to_string()), code: "let x = 1;".to_string() },
+        Element::Heading {
+            level: 1,
+            text: "H1".to_string(),
+        },
+        Element::Paragraph {
+            text: RichText { segments: vec![] },
+        },
+        Element::CodeBlock {
+            language: Some("rust".to_string()),
+            code: "let x = 1;".to_string(),
+        },
         Element::List {
             ordered: false,
             items: vec![ListItem {
-                text: RichText { segments: vec![TextSegment {
-                    text: "item".to_string(),
-                    bold: false, italic: false, code: false, link: None,
-                }] },
+                text: RichText {
+                    segments: vec![TextSegment {
+                        text: "item".to_string(),
+                        bold: false,
+                        italic: false,
+                        code: false,
+                        link: None,
+                    }],
+                },
                 children: vec![],
             }],
         },
@@ -80,9 +93,14 @@ fn test_all_element_variants() {
             headers: vec!["A".to_string()],
             rows: vec![vec!["1".to_string()]],
         },
-        Element::Image { data: vec![0u8], alt: Some("img".to_string()) },
+        Element::Image {
+            data: vec![0u8],
+            alt: Some("img".to_string()),
+        },
         Element::HorizontalRule,
-        Element::BlockQuote { text: RichText { segments: vec![] } },
+        Element::BlockQuote {
+            text: RichText { segments: vec![] },
+        },
     ];
     assert_eq!(elements.len(), 8);
 }

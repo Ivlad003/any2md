@@ -17,12 +17,25 @@ fn plain_text(s: &str) -> RichText {
 #[test]
 fn test_render_heading() {
     let doc = Document {
-        metadata: Metadata { title: None, author: None, date: None },
+        metadata: Metadata {
+            title: None,
+            author: None,
+            date: None,
+        },
         pages: vec![Page {
             elements: vec![
-                Element::Heading { level: 1, text: "Title".to_string() },
-                Element::Heading { level: 2, text: "Subtitle".to_string() },
-                Element::Heading { level: 3, text: "Section".to_string() },
+                Element::Heading {
+                    level: 1,
+                    text: "Title".to_string(),
+                },
+                Element::Heading {
+                    level: 2,
+                    text: "Subtitle".to_string(),
+                },
+                Element::Heading {
+                    level: 3,
+                    text: "Section".to_string(),
+                },
             ],
         }],
     };
@@ -36,9 +49,15 @@ fn test_render_heading() {
 #[test]
 fn test_render_paragraph_plain() {
     let doc = Document {
-        metadata: Metadata { title: None, author: None, date: None },
+        metadata: Metadata {
+            title: None,
+            author: None,
+            date: None,
+        },
         pages: vec![Page {
-            elements: vec![Element::Paragraph { text: plain_text("Hello world") }],
+            elements: vec![Element::Paragraph {
+                text: plain_text("Hello world"),
+            }],
         }],
     };
     let opts = ConvertOptions::default();
@@ -50,17 +69,63 @@ fn test_render_paragraph_plain() {
 fn test_render_rich_text_formatting() {
     let rt = RichText {
         segments: vec![
-            TextSegment { text: "bold".to_string(), bold: true, italic: false, code: false, link: None },
-            TextSegment { text: " and ".to_string(), bold: false, italic: false, code: false, link: None },
-            TextSegment { text: "italic".to_string(), bold: false, italic: true, code: false, link: None },
-            TextSegment { text: " and ".to_string(), bold: false, italic: false, code: false, link: None },
-            TextSegment { text: "code".to_string(), bold: false, italic: false, code: true, link: None },
-            TextSegment { text: " and ".to_string(), bold: false, italic: false, code: false, link: None },
-            TextSegment { text: "link".to_string(), bold: false, italic: false, code: false, link: Some("https://example.com".to_string()) },
+            TextSegment {
+                text: "bold".to_string(),
+                bold: true,
+                italic: false,
+                code: false,
+                link: None,
+            },
+            TextSegment {
+                text: " and ".to_string(),
+                bold: false,
+                italic: false,
+                code: false,
+                link: None,
+            },
+            TextSegment {
+                text: "italic".to_string(),
+                bold: false,
+                italic: true,
+                code: false,
+                link: None,
+            },
+            TextSegment {
+                text: " and ".to_string(),
+                bold: false,
+                italic: false,
+                code: false,
+                link: None,
+            },
+            TextSegment {
+                text: "code".to_string(),
+                bold: false,
+                italic: false,
+                code: true,
+                link: None,
+            },
+            TextSegment {
+                text: " and ".to_string(),
+                bold: false,
+                italic: false,
+                code: false,
+                link: None,
+            },
+            TextSegment {
+                text: "link".to_string(),
+                bold: false,
+                italic: false,
+                code: false,
+                link: Some("https://example.com".to_string()),
+            },
         ],
     };
     let doc = Document {
-        metadata: Metadata { title: None, author: None, date: None },
+        metadata: Metadata {
+            title: None,
+            author: None,
+            date: None,
+        },
         pages: vec![Page {
             elements: vec![Element::Paragraph { text: rt }],
         }],
@@ -76,7 +141,11 @@ fn test_render_rich_text_formatting() {
 #[test]
 fn test_render_code_block() {
     let doc = Document {
-        metadata: Metadata { title: None, author: None, date: None },
+        metadata: Metadata {
+            title: None,
+            author: None,
+            date: None,
+        },
         pages: vec![Page {
             elements: vec![Element::CodeBlock {
                 language: Some("rust".to_string()),
@@ -92,7 +161,11 @@ fn test_render_code_block() {
 #[test]
 fn test_render_code_block_no_language() {
     let doc = Document {
-        metadata: Metadata { title: None, author: None, date: None },
+        metadata: Metadata {
+            title: None,
+            author: None,
+            date: None,
+        },
         pages: vec![Page {
             elements: vec![Element::CodeBlock {
                 language: None,
@@ -108,13 +181,23 @@ fn test_render_code_block_no_language() {
 #[test]
 fn test_render_unordered_list() {
     let doc = Document {
-        metadata: Metadata { title: None, author: None, date: None },
+        metadata: Metadata {
+            title: None,
+            author: None,
+            date: None,
+        },
         pages: vec![Page {
             elements: vec![Element::List {
                 ordered: false,
                 items: vec![
-                    ListItem { text: plain_text("First"), children: vec![] },
-                    ListItem { text: plain_text("Second"), children: vec![] },
+                    ListItem {
+                        text: plain_text("First"),
+                        children: vec![],
+                    },
+                    ListItem {
+                        text: plain_text("Second"),
+                        children: vec![],
+                    },
                 ],
             }],
         }],
@@ -128,13 +211,23 @@ fn test_render_unordered_list() {
 #[test]
 fn test_render_ordered_list() {
     let doc = Document {
-        metadata: Metadata { title: None, author: None, date: None },
+        metadata: Metadata {
+            title: None,
+            author: None,
+            date: None,
+        },
         pages: vec![Page {
             elements: vec![Element::List {
                 ordered: true,
                 items: vec![
-                    ListItem { text: plain_text("First"), children: vec![] },
-                    ListItem { text: plain_text("Second"), children: vec![] },
+                    ListItem {
+                        text: plain_text("First"),
+                        children: vec![],
+                    },
+                    ListItem {
+                        text: plain_text("Second"),
+                        children: vec![],
+                    },
                 ],
             }],
         }],
@@ -148,18 +241,21 @@ fn test_render_ordered_list() {
 #[test]
 fn test_render_nested_list() {
     let doc = Document {
-        metadata: Metadata { title: None, author: None, date: None },
+        metadata: Metadata {
+            title: None,
+            author: None,
+            date: None,
+        },
         pages: vec![Page {
             elements: vec![Element::List {
                 ordered: false,
-                items: vec![
-                    ListItem {
-                        text: plain_text("Parent"),
-                        children: vec![
-                            ListItem { text: plain_text("Child"), children: vec![] },
-                        ],
-                    },
-                ],
+                items: vec![ListItem {
+                    text: plain_text("Parent"),
+                    children: vec![ListItem {
+                        text: plain_text("Child"),
+                        children: vec![],
+                    }],
+                }],
             }],
         }],
     };
@@ -172,7 +268,11 @@ fn test_render_nested_list() {
 #[test]
 fn test_render_table() {
     let doc = Document {
-        metadata: Metadata { title: None, author: None, date: None },
+        metadata: Metadata {
+            title: None,
+            author: None,
+            date: None,
+        },
         pages: vec![Page {
             elements: vec![Element::Table {
                 headers: vec!["Name".to_string(), "Age".to_string()],
@@ -194,7 +294,11 @@ fn test_render_table() {
 #[test]
 fn test_render_horizontal_rule() {
     let doc = Document {
-        metadata: Metadata { title: None, author: None, date: None },
+        metadata: Metadata {
+            title: None,
+            author: None,
+            date: None,
+        },
         pages: vec![Page {
             elements: vec![Element::HorizontalRule],
         }],
@@ -207,9 +311,15 @@ fn test_render_horizontal_rule() {
 #[test]
 fn test_render_blockquote() {
     let doc = Document {
-        metadata: Metadata { title: None, author: None, date: None },
+        metadata: Metadata {
+            title: None,
+            author: None,
+            date: None,
+        },
         pages: vec![Page {
-            elements: vec![Element::BlockQuote { text: plain_text("A quote") }],
+            elements: vec![Element::BlockQuote {
+                text: plain_text("A quote"),
+            }],
         }],
     };
     let opts = ConvertOptions::default();
@@ -220,7 +330,11 @@ fn test_render_blockquote() {
 #[test]
 fn test_render_image_inline() {
     let doc = Document {
-        metadata: Metadata { title: None, author: None, date: None },
+        metadata: Metadata {
+            title: None,
+            author: None,
+            date: None,
+        },
         pages: vec![Page {
             elements: vec![Element::Image {
                 data: vec![0x89, 0x50, 0x4E, 0x47],
@@ -239,10 +353,22 @@ fn test_render_image_inline() {
 #[test]
 fn test_render_multiple_pages_single_file() {
     let doc = Document {
-        metadata: Metadata { title: None, author: None, date: None },
+        metadata: Metadata {
+            title: None,
+            author: None,
+            date: None,
+        },
         pages: vec![
-            Page { elements: vec![Element::Paragraph { text: plain_text("Page 1") }] },
-            Page { elements: vec![Element::Paragraph { text: plain_text("Page 2") }] },
+            Page {
+                elements: vec![Element::Paragraph {
+                    text: plain_text("Page 1"),
+                }],
+            },
+            Page {
+                elements: vec![Element::Paragraph {
+                    text: plain_text("Page 2"),
+                }],
+            },
         ],
     };
     let opts = ConvertOptions::default();
@@ -272,10 +398,18 @@ fn test_render_metadata_header() {
 #[test]
 fn test_render_empty_page_skipped() {
     let doc = Document {
-        metadata: Metadata { title: None, author: None, date: None },
+        metadata: Metadata {
+            title: None,
+            author: None,
+            date: None,
+        },
         pages: vec![
             Page { elements: vec![] },
-            Page { elements: vec![Element::Paragraph { text: plain_text("Content") }] },
+            Page {
+                elements: vec![Element::Paragraph {
+                    text: plain_text("Content"),
+                }],
+            },
         ],
     };
     let opts = ConvertOptions::default();

@@ -1,10 +1,10 @@
-use std::path::{Path, PathBuf};
-use std::process;
-use clap::Parser;
-use any2md::converter::ConverterRegistry;
 use any2md::converter::pdf::PdfConverter;
+use any2md::converter::ConverterRegistry;
 use any2md::model::options::{ConvertOptions, ImageMode, PageMode};
 use any2md::renderer::markdown::MarkdownRenderer;
+use clap::Parser;
+use std::path::{Path, PathBuf};
+use std::process;
 
 #[derive(Parser)]
 #[command(name = "any2md", about = "Convert files to Markdown")]
@@ -32,7 +32,10 @@ fn main() {
         "extract" => ImageMode::Extract,
         "inline" => ImageMode::Inline,
         other => {
-            eprintln!("Error: unknown image mode '{}'. Use 'extract' or 'inline'.", other);
+            eprintln!(
+                "Error: unknown image mode '{}'. Use 'extract' or 'inline'.",
+                other
+            );
             process::exit(1);
         }
     };
@@ -41,7 +44,10 @@ fn main() {
         "single" => PageMode::SingleFile,
         "split" => PageMode::SplitPages,
         other => {
-            eprintln!("Error: unknown page mode '{}'. Use 'single' or 'split'.", other);
+            eprintln!(
+                "Error: unknown page mode '{}'. Use 'single' or 'split'.",
+                other
+            );
             process::exit(1);
         }
     };
@@ -65,11 +71,7 @@ fn main() {
     let mut registry = ConverterRegistry::new();
     registry.register(Box::new(PdfConverter));
 
-    let ext = cli
-        .input
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = cli.input.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     let converter = match registry.find_by_extension(ext) {
         Some(c) => c,

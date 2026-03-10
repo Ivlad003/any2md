@@ -5,10 +5,13 @@ use crate::model::document::*;
 pub struct Assembler;
 
 impl Assembler {
-    pub fn assemble(classified_pages: Vec<Vec<(RawTextBlock, BlockType)>>, metadata: Metadata) -> Document {
+    pub fn assemble(
+        classified_pages: Vec<Vec<(RawTextBlock, BlockType)>>,
+        metadata: Metadata,
+    ) -> Document {
         let pages = classified_pages
             .into_iter()
-            .map(|blocks| Self::assemble_page(blocks))
+            .map(Self::assemble_page)
             .collect();
 
         Document { metadata, pages }
@@ -59,8 +62,12 @@ impl Assembler {
                             break;
                         }
                     }
-                    let ordered = Self::detect_ordered(&blocks.get(i.saturating_sub(items.len()))
-                        .map(|(b, _)| b.text.as_str()).unwrap_or(""));
+                    let ordered = Self::detect_ordered(
+                        blocks
+                            .get(i.saturating_sub(items.len()))
+                            .map(|(b, _)| b.text.as_str())
+                            .unwrap_or(""),
+                    );
                     elements.push(Element::List { ordered, items });
                 }
                 BlockType::Paragraph => {
@@ -100,7 +107,11 @@ impl Assembler {
 
     fn detect_ordered(text: &str) -> bool {
         let trimmed = text.trim();
-        trimmed.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
+        trimmed
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false)
     }
 
     fn plain_rich_text(text: &str) -> RichText {
@@ -132,7 +143,11 @@ mod tests {
     }
 
     fn empty_metadata() -> Metadata {
-        Metadata { title: None, author: None, date: None }
+        Metadata {
+            title: None,
+            author: None,
+            date: None,
+        }
     }
 
     #[test]
@@ -143,8 +158,12 @@ mod tests {
         ];
         let doc = Assembler::assemble(vec![blocks], empty_metadata());
         assert_eq!(doc.pages.len(), 1);
-        assert!(matches!(&doc.pages[0].elements[0], Element::Heading { level: 1, text } if text == "Title"));
-        assert!(matches!(&doc.pages[0].elements[1], Element::Heading { level: 2, text } if text == "Subtitle"));
+        assert!(
+            matches!(&doc.pages[0].elements[0], Element::Heading { level: 1, text } if text == "Title")
+        );
+        assert!(
+            matches!(&doc.pages[0].elements[1], Element::Heading { level: 2, text } if text == "Subtitle")
+        );
     }
 
     #[test]
@@ -204,7 +223,10 @@ mod tests {
         ];
         let doc = Assembler::assemble(vec![blocks], empty_metadata());
         assert_eq!(doc.pages[0].elements.len(), 2);
-        assert!(matches!(&doc.pages[0].elements[0], Element::Paragraph { .. }));
+        assert!(matches!(
+            &doc.pages[0].elements[0],
+            Element::Paragraph { .. }
+        ));
     }
 
     #[test]
