@@ -1,4 +1,4 @@
-use crate::converter::pdf::classifier::BlockType;
+use crate::converter::pdf::classifier::{BlockType, Classifier};
 use crate::converter::pdf::extractor::RawTextBlock;
 use crate::model::document::*;
 
@@ -54,7 +54,7 @@ impl Assembler {
                         if let BlockType::ListItem = blocks[i].1 {
                             let text = Self::strip_list_marker(&blocks[i].0.text);
                             items.push(ListItem {
-                                text: Self::plain_rich_text(&text),
+                                text: Self::rich_text_from_block(&text, &blocks[i].0),
                                 children: vec![],
                             });
                             i += 1;
@@ -72,7 +72,7 @@ impl Assembler {
                 }
                 BlockType::Paragraph => {
                     elements.push(Element::Paragraph {
-                        text: Self::plain_rich_text(&block.text),
+                        text: Self::rich_text_from_block(&block.text, block),
                     });
                     i += 1;
                 }
@@ -114,12 +114,12 @@ impl Assembler {
             .unwrap_or(false)
     }
 
-    fn plain_rich_text(text: &str) -> RichText {
+    fn rich_text_from_block(text: &str, block: &RawTextBlock) -> RichText {
         RichText {
             segments: vec![TextSegment {
                 text: text.to_string(),
-                bold: false,
-                italic: false,
+                bold: Classifier::is_bold(&block.font_name),
+                italic: Classifier::is_italic(&block.font_name),
                 code: false,
                 link: None,
             }],
@@ -139,6 +139,16 @@ mod tests {
             y: 700.0,
             font_size: 12.0,
             font_name: "Helvetica".to_string(),
+        }
+    }
+
+    fn make_block_with_font(text: &str, font_name: &str) -> RawTextBlock {
+        RawTextBlock {
+            text: text.to_string(),
+            x: 72.0,
+            y: 700.0,
+            font_size: 12.0,
+            font_name: font_name.to_string(),
         }
     }
 
@@ -248,5 +258,65 @@ mod tests {
         assert_eq!(Assembler::strip_list_marker("* item"), "item");
         assert_eq!(Assembler::strip_list_marker("1. item"), "item");
         assert_eq!(Assembler::strip_list_marker("10. item"), "item");
+    }
+
+    #[test]
+    fn test_bold_font_produces_bold_paragraph() {
+        let blocks = vec![(
+            make_block_with_font("Bold text", "Helvetica-Bold"),
+            BlockType::Paragraph,
+        )];
+        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        if let Element::Paragraph { text } = &doc.pages[0].elements[0] {
+            assert!(text.segments[0].bold);
+            assert!(!text.segments[0].italic);
+        } else {
+            panic!("Expected Paragraph");
+        }
+    }
+
+    #[test]
+    fn test_italic_font_produces_italic_paragraph() {
+        let blocks = vec![(
+            make_block_with_font("Italic text", "Helvetica-Oblique"),
+            BlockType::Paragraph,
+        )];
+        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        if let Element::Paragraph { text } = &doc.pages[0].elements[0] {
+            assert!(!text.segments[0].bold);
+            assert!(text.segments[0].italic);
+        } else {
+            panic!("Expected Paragraph");
+        }
+    }
+
+    #[test]
+    fn test_bold_italic_font_produces_both() {
+        let blocks = vec![(
+            make_block_with_font("Bold italic text", "Helvetica-BoldOblique"),
+            BlockType::Paragraph,
+        )];
+        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        if let Element::Paragraph { text } = &doc.pages[0].elements[0] {
+            assert!(text.segments[0].bold);
+            assert!(text.segments[0].italic);
+        } else {
+            panic!("Expected Paragraph");
+        }
+    }
+
+    #[test]
+    fn test_plain_font_no_bold_no_italic() {
+        let blocks = vec![(
+            make_block_with_font("Plain text", "Helvetica"),
+            BlockType::Paragraph,
+        )];
+        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        if let Element::Paragraph { text } = &doc.pages[0].elements[0] {
+            assert!(!text.segments[0].bold);
+            assert!(!text.segments[0].italic);
+        } else {
+            panic!("Expected Paragraph");
+        }
     }
 }

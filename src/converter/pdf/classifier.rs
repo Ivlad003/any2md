@@ -102,11 +102,11 @@ impl Classifier {
         }
     }
 
-    fn _is_bold(font_name: &str) -> bool {
+    pub fn is_bold(font_name: &str) -> bool {
         font_name.to_lowercase().contains("bold")
     }
 
-    fn _is_italic(font_name: &str) -> bool {
+    pub fn is_italic(font_name: &str) -> bool {
         let lower = font_name.to_lowercase();
         lower.contains("italic") || lower.contains("oblique")
     }
