@@ -91,7 +91,13 @@ fn main() {
         }
     };
 
-    let markdown = MarkdownRenderer::render(&doc, &options);
+    let markdown = match MarkdownRenderer::render(&doc, &options) {
+        Ok(md) => md,
+        Err(e) => {
+            eprintln!("Error rendering: {}", e);
+            process::exit(1);
+        }
+    };
 
     match std::fs::write(&output_path, &markdown) {
         Ok(_) => eprintln!("Written to {}", output_path.display()),

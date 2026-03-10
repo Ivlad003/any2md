@@ -1,4 +1,4 @@
-use crate::converter::pdf::classifier::{BlockType, Classifier};
+use crate::converter::pdf::classifier::{BlockType, ClassifiedElement, Classifier};
 use crate::converter::pdf::extractor::RawTextBlock;
 use crate::model::document::*;
 
@@ -6,7 +6,7 @@ pub struct Assembler;
 
 impl Assembler {
     pub fn assemble(
-        classified_pages: Vec<Vec<(RawTextBlock, BlockType)>>,
+        classified_pages: Vec<Vec<ClassifiedElement>>,
         metadata: Metadata,
     ) -> Document {
         let pages = classified_pages
@@ -17,64 +17,74 @@ impl Assembler {
         Document { metadata, pages }
     }
 
-    fn assemble_page(blocks: Vec<(RawTextBlock, BlockType)>) -> Page {
+    fn assemble_page(elems: Vec<ClassifiedElement>) -> Page {
         let mut elements = Vec::new();
         let mut i = 0;
 
-        while i < blocks.len() {
-            let (ref block, ref block_type) = blocks[i];
-
-            match block_type {
-                BlockType::Heading(level) => {
-                    elements.push(Element::Heading {
-                        level: *level,
-                        text: block.text.clone(),
+        while i < elems.len() {
+            match &elems[i] {
+                ClassifiedElement::Image(img) => {
+                    elements.push(Element::Image {
+                        data: img.data.clone(),
+                        alt: None,
                     });
                     i += 1;
                 }
-                BlockType::CodeBlock => {
-                    let mut code_lines = vec![block.text.clone()];
-                    i += 1;
-                    while i < blocks.len() {
-                        if let BlockType::CodeBlock = blocks[i].1 {
-                            code_lines.push(blocks[i].0.text.clone());
-                            i += 1;
-                        } else {
-                            break;
-                        }
-                    }
-                    elements.push(Element::CodeBlock {
-                        language: None,
-                        code: code_lines.join("\n"),
-                    });
-                }
-                BlockType::ListItem => {
-                    let mut items = Vec::new();
-                    while i < blocks.len() {
-                        if let BlockType::ListItem = blocks[i].1 {
-                            let text = Self::strip_list_marker(&blocks[i].0.text);
-                            items.push(ListItem {
-                                text: Self::rich_text_from_block(&text, &blocks[i].0),
-                                children: vec![],
+                ClassifiedElement::Text(block, block_type) => {
+                    match block_type {
+                        BlockType::Heading(level) => {
+                            elements.push(Element::Heading {
+                                level: *level,
+                                text: block.text.clone(),
                             });
                             i += 1;
-                        } else {
-                            break;
+                        }
+                        BlockType::CodeBlock => {
+                            let mut code_lines = vec![block.text.clone()];
+                            i += 1;
+                            while i < elems.len() {
+                                if let ClassifiedElement::Text(b, BlockType::CodeBlock) = &elems[i] {
+                                    code_lines.push(b.text.clone());
+                                    i += 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                            elements.push(Element::CodeBlock {
+                                language: None,
+                                code: code_lines.join("\n"),
+                            });
+                        }
+                        BlockType::ListItem => {
+                            let start = i;
+                            let mut items = Vec::new();
+                            while i < elems.len() {
+                                if let ClassifiedElement::Text(b, BlockType::ListItem) = &elems[i] {
+                                    let text = Self::strip_list_marker(&b.text);
+                                    items.push(ListItem {
+                                        text: Self::rich_text_from_block(&text, b),
+                                        children: vec![],
+                                    });
+                                    i += 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                            let first_text = if let ClassifiedElement::Text(b, _) = &elems[start] {
+                                b.text.as_str()
+                            } else {
+                                ""
+                            };
+                            let ordered = Self::detect_ordered(first_text);
+                            elements.push(Element::List { ordered, items });
+                        }
+                        BlockType::Paragraph => {
+                            elements.push(Element::Paragraph {
+                                text: Self::rich_text_from_block(&block.text, block),
+                            });
+                            i += 1;
                         }
                     }
-                    let ordered = Self::detect_ordered(
-                        blocks
-                            .get(i.saturating_sub(items.len()))
-                            .map(|(b, _)| b.text.as_str())
-                            .unwrap_or(""),
-                    );
-                    elements.push(Element::List { ordered, items });
-                }
-                BlockType::Paragraph => {
-                    elements.push(Element::Paragraph {
-                        text: Self::rich_text_from_block(&block.text, block),
-                    });
-                    i += 1;
                 }
             }
         }
@@ -160,11 +170,15 @@ mod tests {
         }
     }
 
+    fn ce(block: RawTextBlock, bt: BlockType) -> ClassifiedElement {
+        ClassifiedElement::Text(block, bt)
+    }
+
     #[test]
     fn test_assemble_headings() {
         let blocks = vec![
-            (make_block("Title"), BlockType::Heading(1)),
-            (make_block("Subtitle"), BlockType::Heading(2)),
+            ce(make_block("Title"), BlockType::Heading(1)),
+            ce(make_block("Subtitle"), BlockType::Heading(2)),
         ];
         let doc = Assembler::assemble(vec![blocks], empty_metadata());
         assert_eq!(doc.pages.len(), 1);
@@ -179,9 +193,9 @@ mod tests {
     #[test]
     fn test_assemble_consecutive_code_blocks_merged() {
         let blocks = vec![
-            (make_block("fn main() {"), BlockType::CodeBlock),
-            (make_block("    println!(\"hi\");"), BlockType::CodeBlock),
-            (make_block("}"), BlockType::CodeBlock),
+            ce(make_block("fn main() {"), BlockType::CodeBlock),
+            ce(make_block("    println!(\"hi\");"), BlockType::CodeBlock),
+            ce(make_block("}"), BlockType::CodeBlock),
         ];
         let doc = Assembler::assemble(vec![blocks], empty_metadata());
         assert_eq!(doc.pages[0].elements.len(), 1);
@@ -197,8 +211,8 @@ mod tests {
     #[test]
     fn test_assemble_list_items() {
         let blocks = vec![
-            (make_block("- First"), BlockType::ListItem),
-            (make_block("- Second"), BlockType::ListItem),
+            ce(make_block("- First"), BlockType::ListItem),
+            ce(make_block("- Second"), BlockType::ListItem),
         ];
         let doc = Assembler::assemble(vec![blocks], empty_metadata());
         if let Element::List { ordered, items } = &doc.pages[0].elements[0] {
@@ -213,8 +227,8 @@ mod tests {
     #[test]
     fn test_assemble_ordered_list() {
         let blocks = vec![
-            (make_block("1. First"), BlockType::ListItem),
-            (make_block("2. Second"), BlockType::ListItem),
+            ce(make_block("1. First"), BlockType::ListItem),
+            ce(make_block("2. Second"), BlockType::ListItem),
         ];
         let doc = Assembler::assemble(vec![blocks], empty_metadata());
         if let Element::List { ordered, items } = &doc.pages[0].elements[0] {
@@ -228,8 +242,8 @@ mod tests {
     #[test]
     fn test_assemble_paragraphs() {
         let blocks = vec![
-            (make_block("Some text"), BlockType::Paragraph),
-            (make_block("More text"), BlockType::Paragraph),
+            ce(make_block("Some text"), BlockType::Paragraph),
+            ce(make_block("More text"), BlockType::Paragraph),
         ];
         let doc = Assembler::assemble(vec![blocks], empty_metadata());
         assert_eq!(doc.pages[0].elements.len(), 2);
@@ -242,10 +256,10 @@ mod tests {
     #[test]
     fn test_assemble_mixed_content() {
         let blocks = vec![
-            (make_block("Title"), BlockType::Heading(1)),
-            (make_block("Intro text"), BlockType::Paragraph),
-            (make_block("let x = 1;"), BlockType::CodeBlock),
-            (make_block("- item"), BlockType::ListItem),
+            ce(make_block("Title"), BlockType::Heading(1)),
+            ce(make_block("Intro text"), BlockType::Paragraph),
+            ce(make_block("let x = 1;"), BlockType::CodeBlock),
+            ce(make_block("- item"), BlockType::ListItem),
         ];
         let doc = Assembler::assemble(vec![blocks], empty_metadata());
         assert_eq!(doc.pages[0].elements.len(), 4);
@@ -262,7 +276,7 @@ mod tests {
 
     #[test]
     fn test_bold_font_produces_bold_paragraph() {
-        let blocks = vec![(
+        let blocks = vec![ce(
             make_block_with_font("Bold text", "Helvetica-Bold"),
             BlockType::Paragraph,
         )];
@@ -277,7 +291,7 @@ mod tests {
 
     #[test]
     fn test_italic_font_produces_italic_paragraph() {
-        let blocks = vec![(
+        let blocks = vec![ce(
             make_block_with_font("Italic text", "Helvetica-Oblique"),
             BlockType::Paragraph,
         )];
@@ -292,7 +306,7 @@ mod tests {
 
     #[test]
     fn test_bold_italic_font_produces_both() {
-        let blocks = vec![(
+        let blocks = vec![ce(
             make_block_with_font("Bold italic text", "Helvetica-BoldOblique"),
             BlockType::Paragraph,
         )];
@@ -307,7 +321,7 @@ mod tests {
 
     #[test]
     fn test_plain_font_no_bold_no_italic() {
-        let blocks = vec![(
+        let blocks = vec![ce(
             make_block_with_font("Plain text", "Helvetica"),
             BlockType::Paragraph,
         )];
@@ -318,5 +332,29 @@ mod tests {
         } else {
             panic!("Expected Paragraph");
         }
+    }
+
+    #[test]
+    fn test_assemble_image_element() {
+        use crate::converter::pdf::extractor::RawImage;
+        let blocks = vec![
+            ce(make_block("Before image"), BlockType::Paragraph),
+            ClassifiedElement::Image(RawImage {
+                data: vec![0x89, 0x50, 0x4E, 0x47],
+                width: 200,
+                height: 100,
+            }),
+            ce(make_block("After image"), BlockType::Paragraph),
+        ];
+        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        assert_eq!(doc.pages[0].elements.len(), 3);
+        assert!(matches!(&doc.pages[0].elements[0], Element::Paragraph { .. }));
+        if let Element::Image { data, alt } = &doc.pages[0].elements[1] {
+            assert_eq!(data, &vec![0x89, 0x50, 0x4E, 0x47]);
+            assert!(alt.is_none());
+        } else {
+            panic!("Expected Image element");
+        }
+        assert!(matches!(&doc.pages[0].elements[2], Element::Paragraph { .. }));
     }
 }

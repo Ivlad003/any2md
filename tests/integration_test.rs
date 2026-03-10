@@ -116,7 +116,7 @@ fn test_full_pipeline_with_document() {
     };
 
     let opts = ConvertOptions::default();
-    let md = MarkdownRenderer::render(&doc, &opts);
+    let md = MarkdownRenderer::render(&doc, &opts).unwrap();
 
     assert!(md.contains("# Integration Test"));
     assert!(md.contains("**Author:** Test Author"));

@@ -40,7 +40,7 @@ fn test_render_heading() {
         }],
     };
     let opts = ConvertOptions::default();
-    let result = MarkdownRenderer::render(&doc, &opts);
+    let result = MarkdownRenderer::render(&doc, &opts).unwrap();
     assert!(result.contains("# Title"));
     assert!(result.contains("## Subtitle"));
     assert!(result.contains("### Section"));
@@ -61,7 +61,7 @@ fn test_render_paragraph_plain() {
         }],
     };
     let opts = ConvertOptions::default();
-    let result = MarkdownRenderer::render(&doc, &opts);
+    let result = MarkdownRenderer::render(&doc, &opts).unwrap();
     assert!(result.contains("Hello world"));
 }
 
@@ -131,7 +131,7 @@ fn test_render_rich_text_formatting() {
         }],
     };
     let opts = ConvertOptions::default();
-    let result = MarkdownRenderer::render(&doc, &opts);
+    let result = MarkdownRenderer::render(&doc, &opts).unwrap();
     assert!(result.contains("**bold**"));
     assert!(result.contains("*italic*"));
     assert!(result.contains("`code`"));
@@ -154,7 +154,7 @@ fn test_render_code_block() {
         }],
     };
     let opts = ConvertOptions::default();
-    let result = MarkdownRenderer::render(&doc, &opts);
+    let result = MarkdownRenderer::render(&doc, &opts).unwrap();
     assert!(result.contains("```rust\nfn main() {}\n```"));
 }
 
@@ -174,7 +174,7 @@ fn test_render_code_block_no_language() {
         }],
     };
     let opts = ConvertOptions::default();
-    let result = MarkdownRenderer::render(&doc, &opts);
+    let result = MarkdownRenderer::render(&doc, &opts).unwrap();
     assert!(result.contains("```\nsome code\n```"));
 }
 
@@ -203,7 +203,7 @@ fn test_render_unordered_list() {
         }],
     };
     let opts = ConvertOptions::default();
-    let result = MarkdownRenderer::render(&doc, &opts);
+    let result = MarkdownRenderer::render(&doc, &opts).unwrap();
     assert!(result.contains("- First"));
     assert!(result.contains("- Second"));
 }
@@ -233,7 +233,7 @@ fn test_render_ordered_list() {
         }],
     };
     let opts = ConvertOptions::default();
-    let result = MarkdownRenderer::render(&doc, &opts);
+    let result = MarkdownRenderer::render(&doc, &opts).unwrap();
     assert!(result.contains("1. First"));
     assert!(result.contains("2. Second"));
 }
@@ -260,7 +260,7 @@ fn test_render_nested_list() {
         }],
     };
     let opts = ConvertOptions::default();
-    let result = MarkdownRenderer::render(&doc, &opts);
+    let result = MarkdownRenderer::render(&doc, &opts).unwrap();
     assert!(result.contains("- Parent"));
     assert!(result.contains("  - Child"));
 }
@@ -284,7 +284,7 @@ fn test_render_table() {
         }],
     };
     let opts = ConvertOptions::default();
-    let result = MarkdownRenderer::render(&doc, &opts);
+    let result = MarkdownRenderer::render(&doc, &opts).unwrap();
     assert!(result.contains("| Name | Age |"));
     assert!(result.contains("| --- | --- |"));
     assert!(result.contains("| Alice | 30 |"));
@@ -304,7 +304,7 @@ fn test_render_horizontal_rule() {
         }],
     };
     let opts = ConvertOptions::default();
-    let result = MarkdownRenderer::render(&doc, &opts);
+    let result = MarkdownRenderer::render(&doc, &opts).unwrap();
     assert!(result.contains("---"));
 }
 
@@ -323,7 +323,7 @@ fn test_render_blockquote() {
         }],
     };
     let opts = ConvertOptions::default();
-    let result = MarkdownRenderer::render(&doc, &opts);
+    let result = MarkdownRenderer::render(&doc, &opts).unwrap();
     assert!(result.contains("> A quote"));
 }
 
@@ -346,7 +346,7 @@ fn test_render_image_inline() {
         image_mode: ImageMode::Inline,
         ..ConvertOptions::default()
     };
-    let result = MarkdownRenderer::render(&doc, &opts);
+    let result = MarkdownRenderer::render(&doc, &opts).unwrap();
     assert!(result.contains("![test image](data:image/png;base64,"));
 }
 
@@ -372,7 +372,7 @@ fn test_render_multiple_pages_single_file() {
         ],
     };
     let opts = ConvertOptions::default();
-    let result = MarkdownRenderer::render(&doc, &opts);
+    let result = MarkdownRenderer::render(&doc, &opts).unwrap();
     assert!(result.contains("Page 1"));
     assert!(result.contains("<!-- page 2 -->"));
     assert!(result.contains("Page 2"));
@@ -389,7 +389,7 @@ fn test_render_metadata_header() {
         pages: vec![],
     };
     let opts = ConvertOptions::default();
-    let result = MarkdownRenderer::render(&doc, &opts);
+    let result = MarkdownRenderer::render(&doc, &opts).unwrap();
     assert!(result.contains("# My Doc"));
     assert!(result.contains("Author"));
     assert!(result.contains("2026-01-01"));
@@ -413,7 +413,62 @@ fn test_render_empty_page_skipped() {
         ],
     };
     let opts = ConvertOptions::default();
-    let result = MarkdownRenderer::render(&doc, &opts);
+    let result = MarkdownRenderer::render(&doc, &opts).unwrap();
     assert!(result.contains("Content"));
     assert!(!result.contains("<!-- page 1 -->"));
+}
+
+#[test]
+fn test_render_image_extract_mode_saves_file() {
+    let tmp_dir = std::env::temp_dir().join("any2md_test_images");
+    // Clean up from any previous run
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    let doc = Document {
+        metadata: Metadata {
+            title: None,
+            author: None,
+            date: None,
+        },
+        pages: vec![Page {
+            elements: vec![
+                Element::Image {
+                    data: vec![0x89, 0x50, 0x4E, 0x47],
+                    alt: Some("test img".to_string()),
+                },
+                Element::Image {
+                    data: vec![0xFF, 0xD8, 0xFF],
+                    alt: None,
+                },
+            ],
+        }],
+    };
+    let opts = ConvertOptions {
+        image_mode: ImageMode::Extract,
+        image_output_dir: tmp_dir.clone(),
+        ..ConvertOptions::default()
+    };
+    let result = MarkdownRenderer::render(&doc, &opts).unwrap();
+
+    // Check markdown output references
+    let dir_name = tmp_dir.file_name().unwrap().to_string_lossy();
+    assert!(result.contains(&format!("![test img]({}/img_1.png)", dir_name)));
+    assert!(result.contains(&format!("![image]({}/img_2.png)", dir_name)));
+
+    // Check files were actually written
+    assert!(tmp_dir.join("img_1.png").exists());
+    assert!(tmp_dir.join("img_2.png").exists());
+
+    // Check file contents
+    assert_eq!(
+        std::fs::read(tmp_dir.join("img_1.png")).unwrap(),
+        vec![0x89, 0x50, 0x4E, 0x47]
+    );
+    assert_eq!(
+        std::fs::read(tmp_dir.join("img_2.png")).unwrap(),
+        vec![0xFF, 0xD8, 0xFF]
+    );
+
+    // Clean up
+    let _ = std::fs::remove_dir_all(&tmp_dir);
 }

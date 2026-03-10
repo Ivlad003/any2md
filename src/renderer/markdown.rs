@@ -1,13 +1,16 @@
+use crate::error::ConvertError;
 use crate::model::document::*;
 use crate::model::options::{ConvertOptions, ImageMode};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use std::fs;
 
 pub struct MarkdownRenderer;
 
 impl MarkdownRenderer {
-    pub fn render(doc: &Document, opts: &ConvertOptions) -> String {
+    pub fn render(doc: &Document, opts: &ConvertOptions) -> Result<String, ConvertError> {
         let mut out = String::new();
+        let mut image_counter: usize = 0;
 
         Self::render_metadata(&doc.metadata, &mut out);
 
@@ -26,11 +29,11 @@ impl MarkdownRenderer {
                 if j > 0 {
                     out.push('\n');
                 }
-                Self::render_element(element, opts, &mut out);
+                Self::render_element(element, opts, &mut out, &mut image_counter)?;
             }
         }
 
-        out
+        Ok(out)
     }
 
     fn render_metadata(meta: &Metadata, out: &mut String) {
@@ -50,7 +53,12 @@ impl MarkdownRenderer {
         }
     }
 
-    fn render_element(el: &Element, opts: &ConvertOptions, out: &mut String) {
+    fn render_element(
+        el: &Element,
+        opts: &ConvertOptions,
+        out: &mut String,
+        image_counter: &mut usize,
+    ) -> Result<(), ConvertError> {
         match el {
             Element::Heading { level, text } => {
                 let hashes = "#".repeat(*level as usize);
@@ -71,7 +79,7 @@ impl MarkdownRenderer {
                 Self::render_table(headers, rows, out);
             }
             Element::Image { data, alt } => {
-                Self::render_image(data, alt.as_deref(), opts, out);
+                Self::render_image(data, alt.as_deref(), opts, out, image_counter)?;
             }
             Element::HorizontalRule => {
                 out.push_str("---\n");
@@ -83,6 +91,7 @@ impl MarkdownRenderer {
                 }
             }
         }
+        Ok(())
     }
 
     fn render_rich_text(rt: &RichText) -> String {
@@ -148,7 +157,13 @@ impl MarkdownRenderer {
         }
     }
 
-    fn render_image(data: &[u8], alt: Option<&str>, opts: &ConvertOptions, out: &mut String) {
+    fn render_image(
+        data: &[u8],
+        alt: Option<&str>,
+        opts: &ConvertOptions,
+        out: &mut String,
+        image_counter: &mut usize,
+    ) -> Result<(), ConvertError> {
         let alt_text = alt.unwrap_or("image");
         match opts.image_mode {
             ImageMode::Inline => {
@@ -159,8 +174,23 @@ impl MarkdownRenderer {
                 ));
             }
             ImageMode::Extract => {
-                out.push_str(&format!("![{}]({})\n", alt_text, "image_placeholder"));
+                *image_counter += 1;
+                let filename = format!("img_{}.png", image_counter);
+                let dir = &opts.image_output_dir;
+
+                fs::create_dir_all(dir)?;
+
+                let file_path = dir.join(&filename);
+                fs::write(&file_path, data)?;
+
+                // Use relative path with the directory name
+                let dir_name = dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "images".to_string());
+                out.push_str(&format!("![{}]({}/{})\n", alt_text, dir_name, filename));
             }
         }
+        Ok(())
     }
 }

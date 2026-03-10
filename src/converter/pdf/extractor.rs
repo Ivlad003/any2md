@@ -154,9 +154,120 @@ impl PdfExtractor {
         };
 
         // Try content-stream parsing first; fall back to extract_text on failure.
-        match Self::extract_page_from_streams(doc, page_id) {
-            Ok(page) if !page.elements.is_empty() => Ok(page),
-            _ => Self::extract_page_fallback(doc, page_num),
+        let mut page = match Self::extract_page_from_streams(doc, page_id) {
+            Ok(p) if !p.elements.is_empty() => p,
+            _ => Self::extract_page_fallback(doc, page_num)?,
+        };
+
+        // Extract images from page resources
+        let images = Self::extract_page_images(doc, page_id);
+        for img in images {
+            page.elements.push(RawElement::Image(img));
+        }
+
+        Ok(page)
+    }
+
+    /// Extract Image XObjects from the page resources.
+    fn extract_page_images(doc: &Document, page_id: ObjectId) -> Vec<RawImage> {
+        let mut images = Vec::new();
+
+        // Get the page dictionary
+        let page_obj = match doc.get_object(page_id) {
+            Ok(obj) => obj,
+            Err(_) => return images,
+        };
+
+        let page_dict = match page_obj.as_dict() {
+            Ok(d) => d,
+            Err(_) => return images,
+        };
+
+        // Navigate to Resources -> XObject
+        let resources = match page_dict.get(b"Resources") {
+            Ok(obj) => Self::resolve_object(doc, obj),
+            Err(_) => return images,
+        };
+
+        let resources_dict = match resources.as_dict() {
+            Ok(d) => d,
+            Err(_) => return images,
+        };
+
+        let xobject = match resources_dict.get(b"XObject") {
+            Ok(obj) => Self::resolve_object(doc, obj),
+            Err(_) => return images,
+        };
+
+        let xobject_dict = match xobject.as_dict() {
+            Ok(d) => d,
+            Err(_) => return images,
+        };
+
+        // Iterate over XObject entries
+        for (_name, obj_ref) in xobject_dict.iter() {
+            let obj_id = match obj_ref {
+                Object::Reference(id) => *id,
+                _ => continue,
+            };
+
+            let obj = match doc.get_object(obj_id) {
+                Ok(o) => o,
+                Err(_) => continue,
+            };
+
+            if let Object::Stream(ref stream) = *obj {
+                // Check if Subtype is Image
+                let subtype = stream.dict.get(b"Subtype").ok().and_then(|s| {
+                    match s {
+                        Object::Name(n) => Some(n.clone()),
+                        _ => None,
+                    }
+                });
+
+                if subtype.as_deref() != Some(b"Image") {
+                    continue;
+                }
+
+                let width = stream
+                    .dict
+                    .get(b"Width")
+                    .ok()
+                    .and_then(|o| Self::obj_to_f64(o))
+                    .unwrap_or(0.0) as u32;
+
+                let height = stream
+                    .dict
+                    .get(b"Height")
+                    .ok()
+                    .and_then(|o| Self::obj_to_f64(o))
+                    .unwrap_or(0.0) as u32;
+
+                if width == 0 || height == 0 {
+                    continue;
+                }
+
+                let data = stream.content.clone();
+                if data.is_empty() {
+                    continue;
+                }
+
+                images.push(RawImage {
+                    data,
+                    width,
+                    height,
+                });
+            }
+        }
+
+        images
+    }
+
+    /// Resolve an object reference, returning the referenced object or the object itself.
+    fn resolve_object<'a>(doc: &'a Document, obj: &'a Object) -> &'a Object {
+        match obj {
+            Object::Reference(id) => doc.get_object(*id).unwrap_or(obj),
+            _ => obj,
         }
     }
 

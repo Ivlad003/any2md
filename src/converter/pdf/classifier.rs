@@ -1,4 +1,4 @@
-use crate::converter::pdf::extractor::{RawElement, RawPage, RawTextBlock};
+use crate::converter::pdf::extractor::{RawElement, RawImage, RawPage, RawTextBlock};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BlockType {
@@ -8,10 +8,16 @@ pub enum BlockType {
     Paragraph,
 }
 
+#[derive(Debug, Clone)]
+pub enum ClassifiedElement {
+    Text(RawTextBlock, BlockType),
+    Image(RawImage),
+}
+
 pub struct Classifier;
 
 impl Classifier {
-    pub fn classify(pages: &[RawPage]) -> Vec<Vec<(RawTextBlock, BlockType)>> {
+    pub fn classify(pages: &[RawPage]) -> Vec<Vec<ClassifiedElement>> {
         let avg_font_size = Self::average_font_size(pages);
 
         pages
@@ -19,12 +25,13 @@ impl Classifier {
             .map(|page| {
                 page.elements
                     .iter()
-                    .filter_map(|el| {
-                        if let RawElement::Text(block) = el {
+                    .filter_map(|el| match el {
+                        RawElement::Text(block) => {
                             let block_type = Self::classify_block(block, avg_font_size);
-                            Some((block.clone(), block_type))
-                        } else {
-                            None
+                            Some(ClassifiedElement::Text(block.clone(), block_type))
+                        }
+                        RawElement::Image(img) => {
+                            Some(ClassifiedElement::Image(img.clone()))
                         }
                     })
                     .collect()
@@ -153,6 +160,13 @@ mod tests {
         }
     }
 
+    fn get_block_type(el: &ClassifiedElement) -> &BlockType {
+        match el {
+            ClassifiedElement::Text(_, bt) => bt,
+            ClassifiedElement::Image(_) => panic!("Expected Text element"),
+        }
+    }
+
     #[test]
     fn test_classify_heading_by_font_size() {
         let pages = vec![make_page(vec![
@@ -161,8 +175,8 @@ mod tests {
             make_block("Normal text 2", 12.0, "Helvetica"),
         ])];
         let result = Classifier::classify(&pages);
-        assert_eq!(result[0][0].1, BlockType::Heading(1));
-        assert_eq!(result[0][1].1, BlockType::Paragraph);
+        assert_eq!(*get_block_type(&result[0][0]), BlockType::Heading(1));
+        assert_eq!(*get_block_type(&result[0][1]), BlockType::Paragraph);
     }
 
     #[test]
@@ -172,8 +186,8 @@ mod tests {
             make_block("normal text", 12.0, "Helvetica"),
         ])];
         let result = Classifier::classify(&pages);
-        assert_eq!(result[0][0].1, BlockType::CodeBlock);
-        assert_eq!(result[0][1].1, BlockType::Paragraph);
+        assert_eq!(*get_block_type(&result[0][0]), BlockType::CodeBlock);
+        assert_eq!(*get_block_type(&result[0][1]), BlockType::Paragraph);
     }
 
     #[test]
@@ -185,10 +199,10 @@ mod tests {
             make_block("normal text", 12.0, "Helvetica"),
         ])];
         let result = Classifier::classify(&pages);
-        assert_eq!(result[0][0].1, BlockType::ListItem);
-        assert_eq!(result[0][1].1, BlockType::ListItem);
-        assert_eq!(result[0][2].1, BlockType::ListItem);
-        assert_eq!(result[0][3].1, BlockType::Paragraph);
+        assert_eq!(*get_block_type(&result[0][0]), BlockType::ListItem);
+        assert_eq!(*get_block_type(&result[0][1]), BlockType::ListItem);
+        assert_eq!(*get_block_type(&result[0][2]), BlockType::ListItem);
+        assert_eq!(*get_block_type(&result[0][3]), BlockType::Paragraph);
     }
 
     #[test]
@@ -198,7 +212,7 @@ mod tests {
             make_block("normal", 12.0, "Helvetica"),
         ])];
         let result = Classifier::classify(&pages);
-        assert_eq!(result[0][0].1, BlockType::CodeBlock);
+        assert_eq!(*get_block_type(&result[0][0]), BlockType::CodeBlock);
     }
 
     #[test]
@@ -212,8 +226,29 @@ mod tests {
             make_block("Normal 3", 12.0, "Helvetica"),
         ])];
         let result = Classifier::classify(&pages);
-        assert_eq!(result[0][0].1, BlockType::Heading(1));
-        assert_eq!(result[0][1].1, BlockType::Heading(2));
-        assert_eq!(result[0][2].1, BlockType::Heading(3));
+        assert_eq!(*get_block_type(&result[0][0]), BlockType::Heading(1));
+        assert_eq!(*get_block_type(&result[0][1]), BlockType::Heading(2));
+        assert_eq!(*get_block_type(&result[0][2]), BlockType::Heading(3));
+    }
+
+    #[test]
+    fn test_classify_passes_through_images() {
+        use crate::converter::pdf::extractor::RawImage;
+        let page = RawPage {
+            elements: vec![
+                RawElement::Text(make_block("Hello", 12.0, "Helvetica")),
+                RawElement::Image(RawImage {
+                    data: vec![0xFF, 0xD8],
+                    width: 100,
+                    height: 50,
+                }),
+                RawElement::Text(make_block("World", 12.0, "Helvetica")),
+            ],
+        };
+        let result = Classifier::classify(&[page]);
+        assert_eq!(result[0].len(), 3);
+        assert!(matches!(&result[0][0], ClassifiedElement::Text(_, BlockType::Paragraph)));
+        assert!(matches!(&result[0][1], ClassifiedElement::Image(_)));
+        assert!(matches!(&result[0][2], ClassifiedElement::Text(_, BlockType::Paragraph)));
     }
 }
