@@ -10,6 +10,7 @@ use assembler::Assembler;
 use classifier::Classifier;
 use extractor::PdfExtractor;
 use std::path::Path;
+use tracing::{debug, info};
 
 pub struct PdfConverter;
 
@@ -23,15 +24,31 @@ impl Converter for PdfConverter {
     }
 
     fn convert(&self, input: &Path, _options: &ConvertOptions) -> Result<Document, ConvertError> {
+        info!(input = %input.display(), "PDF conversion started");
+
+        debug!("Phase 1: Extracting raw elements");
         let raw_pages = PdfExtractor::extract(input)?;
+        debug!(pages = raw_pages.len(), "Extraction complete");
+
+        debug!("Phase 2: Classifying elements");
         let classified = Classifier::classify(&raw_pages);
+
+        debug!("Phase 3: Extracting metadata");
         let pdf_meta = PdfExtractor::extract_metadata(input);
         let metadata = Metadata {
             title: pdf_meta.title,
             author: pdf_meta.author,
             date: pdf_meta.date,
         };
-        Ok(Assembler::assemble(classified, metadata))
+
+        debug!("Phase 4: Assembling document");
+        let doc = Assembler::assemble(classified, metadata);
+        info!(
+            pages = doc.pages.len(),
+            elements = doc.pages.iter().map(|p| p.elements.len()).sum::<usize>(),
+            "PDF conversion complete"
+        );
+        Ok(doc)
     }
 }
 

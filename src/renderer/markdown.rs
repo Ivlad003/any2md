@@ -4,6 +4,7 @@ use crate::model::options::{ConvertOptions, ImageMode};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use std::fs;
+use tracing::debug;
 
 pub struct MarkdownRenderer;
 
@@ -11,6 +12,7 @@ impl MarkdownRenderer {
     pub fn render(doc: &Document, opts: &ConvertOptions) -> Result<String, ConvertError> {
         let mut out = String::new();
         let mut image_counter: usize = 0;
+        debug!(pages = doc.pages.len(), image_mode = ?opts.image_mode, "Rendering to markdown");
 
         Self::render_metadata(&doc.metadata, &mut out);
 
@@ -181,6 +183,7 @@ impl MarkdownRenderer {
                 fs::create_dir_all(dir)?;
 
                 let file_path = dir.join(&filename);
+                debug!(path = %file_path.display(), bytes = data.len(), "Saving extracted image");
                 fs::write(&file_path, data)?;
 
                 // Use relative path with the directory name

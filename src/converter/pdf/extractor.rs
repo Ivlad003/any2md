@@ -2,6 +2,7 @@ use crate::error::ConvertError;
 use lopdf::{Document, Object, ObjectId};
 use std::collections::BTreeMap;
 use std::path::Path;
+use tracing::{debug, trace, warn};
 
 #[derive(Debug, Clone)]
 pub struct RawTextBlock {
@@ -49,9 +50,27 @@ impl PdfExtractor {
 
         let mut pages = Vec::new();
         let page_count = doc.get_pages().len();
+        debug!(page_count, path = %path.display(), "PDF loaded");
 
         for page_num in 1..=page_count as u32 {
+            debug!(page_num, page_count, "Extracting page");
             let raw_page = Self::extract_page(&doc, page_num)?;
+            let text_count = raw_page
+                .elements
+                .iter()
+                .filter(|e| matches!(e, RawElement::Text(_)))
+                .count();
+            let image_count = raw_page
+                .elements
+                .iter()
+                .filter(|e| matches!(e, RawElement::Image(_)))
+                .count();
+            debug!(
+                page_num,
+                text_blocks = text_count,
+                images = image_count,
+                "Page extracted"
+            );
             pages.push(raw_page);
         }
 
@@ -84,6 +103,7 @@ impl PdfExtractor {
             .and_then(|d| Self::get_info_string(d, b"CreationDate"))
             .map(|s| Self::parse_pdf_date(&s));
 
+        debug!(?title, ?author, ?date, "PDF metadata extracted");
         PdfMetadata {
             title,
             author,
@@ -155,8 +175,21 @@ impl PdfExtractor {
 
         // Try content-stream parsing first; fall back to extract_text on failure.
         let mut page = match Self::extract_page_from_streams(doc, page_id) {
-            Ok(p) if !p.elements.is_empty() => p,
-            _ => Self::extract_page_fallback(doc, page_num)?,
+            Ok(p) if !p.elements.is_empty() => {
+                debug!(page_num, "Content stream parsing succeeded");
+                p
+            }
+            Ok(_) => {
+                debug!(
+                    page_num,
+                    "Content stream empty, falling back to extract_text"
+                );
+                Self::extract_page_fallback(doc, page_num)?
+            }
+            Err(e) => {
+                warn!(page_num, error = %e, "Content stream parsing failed, falling back");
+                Self::extract_page_fallback(doc, page_num)?
+            }
         };
 
         // Extract images from page resources
@@ -283,6 +316,7 @@ impl PdfExtractor {
 
         // Build font name lookup: /F1 → "Helvetica-Bold", etc.
         let font_map = Self::build_font_map(doc, page_id);
+        debug!(fonts = ?font_map, "Font map built");
 
         let mut elements = Vec::new();
         let mut current_font_tag = String::new();
@@ -302,12 +336,12 @@ impl PdfExtractor {
                 }
                 "ET" => {}
                 "Tf" => {
-                    // Set font — can appear outside BT/ET in some PDFs
                     if op.operands.len() >= 2 {
                         if let Ok(name_bytes) = op.operands[0].as_name() {
                             current_font_tag = String::from_utf8_lossy(name_bytes).into_owned();
                         }
                         current_font_size = Self::obj_to_f64(&op.operands[1]).unwrap_or(12.0);
+                        trace!(font_tag = %current_font_tag, font_size = current_font_size, "Font set");
                     }
                 }
                 "Td" | "TD" => {

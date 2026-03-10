@@ -5,6 +5,7 @@ use any2md::renderer::markdown::MarkdownRenderer;
 use clap::Parser;
 use std::path::{Path, PathBuf};
 use std::process;
+use tracing::{debug, info};
 
 #[derive(Parser)]
 #[command(name = "any2md", about = "Convert files to Markdown")]
@@ -23,10 +24,57 @@ struct Cli {
     /// Page mode: single or split
     #[arg(long, default_value = "single")]
     pages: String,
+
+    /// Enable debug logging to console and file (any2md.log)
+    #[arg(long)]
+    debug: bool,
+
+    /// Path for debug log file (default: any2md.log)
+    #[arg(long, default_value = "any2md.log")]
+    log_file: PathBuf,
+}
+
+fn setup_logging(debug: bool, log_file: &Path) {
+    use tracing_subscriber::fmt;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::EnvFilter;
+
+    if !debug {
+        return;
+    }
+
+    let filter = EnvFilter::new("debug");
+
+    let stderr_layer = fmt::layer()
+        .with_target(true)
+        .with_writer(std::io::stderr)
+        .with_ansi(true);
+
+    let file = std::fs::File::create(log_file).unwrap_or_else(|e| {
+        eprintln!(
+            "Warning: could not create log file '{}': {}",
+            log_file.display(),
+            e
+        );
+        process::exit(1);
+    });
+    let file_layer = fmt::layer()
+        .with_target(true)
+        .with_ansi(false)
+        .with_writer(file);
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(stderr_layer)
+        .with(file_layer)
+        .init();
 }
 
 fn main() {
     let cli = Cli::parse();
+
+    setup_logging(cli.debug, &cli.log_file);
 
     let image_mode = match cli.images.as_str() {
         "extract" => ImageMode::Extract,
@@ -68,6 +116,9 @@ fn main() {
         image_output_dir,
     };
 
+    debug!(input = %cli.input.display(), "Starting conversion");
+    debug!(?options, "Conversion options");
+
     let mut registry = ConverterRegistry::new();
     registry.register(Box::new(PdfConverter));
 
@@ -81,18 +132,35 @@ fn main() {
         }
     };
 
+    info!(
+        converter = converter.name(),
+        extension = ext,
+        "Found converter"
+    );
     eprintln!("Converting {}...", cli.input.display());
 
     let doc = match converter.convert(&cli.input, &options) {
-        Ok(d) => d,
+        Ok(d) => {
+            info!(
+                pages = d.pages.len(),
+                title = ?d.metadata.title,
+                "Conversion complete"
+            );
+            d
+        }
         Err(e) => {
             eprintln!("Error: {}", e);
             process::exit(1);
         }
     };
 
+    debug!("Rendering document to markdown");
+
     let markdown = match MarkdownRenderer::render(&doc, &options) {
-        Ok(md) => md,
+        Ok(md) => {
+            debug!(output_bytes = md.len(), "Rendering complete");
+            md
+        }
         Err(e) => {
             eprintln!("Error rendering: {}", e);
             process::exit(1);
@@ -100,7 +168,10 @@ fn main() {
     };
 
     match std::fs::write(&output_path, &markdown) {
-        Ok(_) => eprintln!("Written to {}", output_path.display()),
+        Ok(_) => {
+            info!(output = %output_path.display(), "Written successfully");
+            eprintln!("Written to {}", output_path.display());
+        }
         Err(e) => {
             eprintln!("Error writing output: {}", e);
             process::exit(1);

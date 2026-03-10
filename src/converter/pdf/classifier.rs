@@ -1,4 +1,5 @@
 use crate::converter::pdf::extractor::{RawElement, RawImage, RawPage, RawTextBlock};
+use tracing::{debug, trace};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BlockType {
@@ -19,6 +20,11 @@ pub struct Classifier;
 impl Classifier {
     pub fn classify(pages: &[RawPage]) -> Vec<Vec<ClassifiedElement>> {
         let avg_font_size = Self::average_font_size(pages);
+        debug!(
+            avg_font_size,
+            page_count = pages.len(),
+            "Starting classification"
+        );
 
         pages
             .iter()
@@ -38,17 +44,26 @@ impl Classifier {
     }
 
     fn classify_block(block: &RawTextBlock, avg_font_size: f64) -> BlockType {
-        if Self::is_code(block) {
-            return BlockType::CodeBlock;
-        }
-        if Self::is_heading(block, avg_font_size) {
+        let result = if Self::is_code(block) {
+            BlockType::CodeBlock
+        } else if Self::is_heading(block, avg_font_size) {
             let level = Self::heading_level(block.font_size, avg_font_size);
-            return BlockType::Heading(level);
-        }
-        if Self::is_list_item(block) {
-            return BlockType::ListItem;
-        }
-        BlockType::Paragraph
+            BlockType::Heading(level)
+        } else if Self::is_list_item(block) {
+            BlockType::ListItem
+        } else {
+            BlockType::Paragraph
+        };
+        trace!(
+            text = %block.text.chars().take(50).collect::<String>(),
+            font = %block.font_name,
+            font_size = block.font_size,
+            x = block.x,
+            y = block.y,
+            block_type = ?result,
+            "Classified block"
+        );
+        result
     }
 
     fn is_code(block: &RawTextBlock) -> bool {
