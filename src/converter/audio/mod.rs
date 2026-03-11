@@ -140,10 +140,7 @@ impl AudioConverter {
         let sections = detect_speakers(&segments);
 
         // 5. Build Document.
-        let title = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(String::from);
+        let title = path.file_name().and_then(|n| n.to_str()).map(String::from);
 
         let doc = build_document(title, &sections);
         Ok(doc)
@@ -264,7 +261,10 @@ fn ensure_model(model_path: &Option<PathBuf>) -> Result<PathBuf, ConvertError> {
     }
 
     std::fs::write(&model_file, &bytes)?;
-    eprintln!("✅ Model downloaded ({:.1} MB).", bytes.len() as f64 / 1024.0 / 1024.0);
+    eprintln!(
+        "✅ Model downloaded ({:.1} MB).",
+        bytes.len() as f64 / 1024.0 / 1024.0
+    );
     tracing::info!("Model downloaded successfully ({} bytes).", bytes.len());
 
     Ok(model_file)
@@ -319,10 +319,7 @@ fn decode_audio_to_pcm(path: &Path) -> Result<Vec<f32>, ConvertError> {
     let track_id = track.id;
     let codec_params = track.codec_params.clone();
     let sample_rate = codec_params.sample_rate.unwrap_or(16000);
-    let _channels = codec_params
-        .channels
-        .map(|c| c.count())
-        .unwrap_or(1);
+    let _channels = codec_params.channels.map(|c| c.count()).unwrap_or(1);
 
     let mut decoder = symphonia::default::get_codecs()
         .make(&codec_params, &DecoderOptions::default())
@@ -422,16 +419,12 @@ fn run_whisper_inference(
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
     let ctx = WhisperContext::new_with_params(
-        model_path
-            .to_str()
-            .ok_or_else(|| {
-                ConvertError::TranscriptionError("Invalid model path encoding".into())
-            })?,
+        model_path.to_str().ok_or_else(|| {
+            ConvertError::TranscriptionError("Invalid model path encoding".into())
+        })?,
         WhisperContextParameters::default(),
     )
-    .map_err(|e| {
-        ConvertError::TranscriptionError(format!("Failed to load whisper model: {e}"))
-    })?;
+    .map_err(|e| ConvertError::TranscriptionError(format!("Failed to load whisper model: {e}")))?;
 
     let mut state = ctx.create_state().map_err(|e| {
         ConvertError::TranscriptionError(format!("Failed to create whisper state: {e}"))
@@ -447,9 +440,9 @@ fn run_whisper_inference(
     params.set_print_timestamps(false);
     params.set_token_timestamps(true);
 
-    state.full(params, samples).map_err(|e| {
-        ConvertError::TranscriptionError(format!("Whisper inference failed: {e}"))
-    })?;
+    state
+        .full(params, samples)
+        .map_err(|e| ConvertError::TranscriptionError(format!("Whisper inference failed: {e}")))?;
 
     let n_segments = state.full_n_segments().map_err(|e| {
         ConvertError::TranscriptionError(format!("Failed to get segment count: {e}"))
@@ -506,9 +499,7 @@ fn transcribe_cloud(path: &Path) -> Result<Vec<TranscriptionSegment>, ConvertErr
     let part = reqwest::blocking::multipart::Part::bytes(file_bytes)
         .file_name(file_name)
         .mime_str("application/octet-stream")
-        .map_err(|e| {
-            ConvertError::NetworkError(format!("Failed to build multipart part: {e}"))
-        })?;
+        .map_err(|e| ConvertError::NetworkError(format!("Failed to build multipart part: {e}")))?;
 
     let form = reqwest::blocking::multipart::Form::new()
         .text("model", "whisper-1")
@@ -538,27 +529,17 @@ fn transcribe_cloud(path: &Path) -> Result<Vec<TranscriptionSegment>, ConvertErr
 
     let body: serde_json::Value = resp
         .json()
-        .map_err(|e| {
-            ConvertError::NetworkError(format!("Failed to parse API response: {e}"))
-        })?;
+        .map_err(|e| ConvertError::NetworkError(format!("Failed to parse API response: {e}")))?;
 
-    let segments_json = body["segments"]
-        .as_array()
-        .ok_or_else(|| {
-            ConvertError::NetworkError(
-                "API response missing 'segments' array".to_string(),
-            )
-        })?;
+    let segments_json = body["segments"].as_array().ok_or_else(|| {
+        ConvertError::NetworkError("API response missing 'segments' array".to_string())
+    })?;
 
     let mut segments = Vec::new();
     for seg in segments_json {
         let start = seg["start"].as_f64().unwrap_or(0.0);
         let end = seg["end"].as_f64().unwrap_or(0.0);
-        let text = seg["text"]
-            .as_str()
-            .unwrap_or("")
-            .trim()
-            .to_string();
+        let text = seg["text"].as_str().unwrap_or("").trim().to_string();
 
         if text.is_empty() {
             continue;

@@ -1,7 +1,7 @@
-use base64::Engine as _;
 use crate::error::ConvertError;
 use crate::model::document::{Document, Element, Metadata, Page, RichText, TextSegment};
 use crate::model::options::ConvertOptions;
+use base64::Engine as _;
 use std::path::Path;
 use std::process::Command;
 use tracing::{debug, info};
@@ -121,10 +121,7 @@ fn ocr_cloud(input: &Path) -> Result<String, ConvertError> {
     let image_bytes = std::fs::read(input)?;
     let base64_image = base64::engine::general_purpose::STANDARD.encode(&image_bytes);
 
-    let extension = input
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("png");
+    let extension = input.extension().and_then(|e| e.to_str()).unwrap_or("png");
     let mime_type = match extension {
         "jpg" | "jpeg" => "image/jpeg",
         "png" => "image/png",
@@ -180,9 +177,11 @@ fn ocr_cloud(input: &Path) -> Result<String, ConvertError> {
 
     let text = json["choices"][0]["message"]["content"]
         .as_str()
-        .ok_or_else(|| ConvertError::NetworkError(
-            "OpenAI API response missing choices[0].message.content".to_string(),
-        ))?
+        .ok_or_else(|| {
+            ConvertError::NetworkError(
+                "OpenAI API response missing choices[0].message.content".to_string(),
+            )
+        })?
         .to_string();
 
     Ok(text)
@@ -235,7 +234,11 @@ mod tests {
     #[test]
     fn test_file_not_found() {
         let opts = ConvertOptions::default();
-        let result = ImageOcrConverter::convert_with_engine(Path::new("nonexistent.png"), &opts, OcrEngine::Local);
+        let result = ImageOcrConverter::convert_with_engine(
+            Path::new("nonexistent.png"),
+            &opts,
+            OcrEngine::Local,
+        );
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ConvertError::FileNotFound(_)));
     }

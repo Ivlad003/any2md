@@ -40,7 +40,11 @@ impl Assembler {
                         i += 1;
                         // Merge consecutive headings at the same level (wrapped text)
                         while i < elems.len() {
-                            if let ClassifiedElement::Text(next_block, BlockType::Heading(next_level)) = &elems[i] {
+                            if let ClassifiedElement::Text(
+                                next_block,
+                                BlockType::Heading(next_level),
+                            ) = &elems[i]
+                            {
                                 if *next_level == heading_level {
                                     let y_gap = (next_block.y - last_y).abs();
                                     if y_gap < last_font_size * 2.0 {

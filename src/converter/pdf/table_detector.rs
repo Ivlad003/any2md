@@ -53,11 +53,10 @@ impl TableDetector {
         let y_lines = Self::group_y_lines(&text_blocks);
 
         // Step 2: Find the table Y-region by looking for Y-lines with wide X-spread
-        let (table_start, table_end) =
-            match Self::find_table_y_region(&y_lines, &text_blocks) {
-                Some(range) => range,
-                None => return Self::no_table(page),
-            };
+        let (table_start, table_end) = match Self::find_table_y_region(&y_lines, &text_blocks) {
+            Some(range) => range,
+            None => return Self::no_table(page),
+        };
 
         // Step 3: Collect blocks within the table region, detect columns by text-edge alignment
         let table_y_lines = &y_lines[table_start..=table_end];
@@ -79,10 +78,7 @@ impl TableDetector {
             None => return Self::no_table(page),
         };
 
-        let table_y_pos = table_y_lines
-            .first()
-            .map(|yl| yl.mean_y)
-            .unwrap_or(0.0);
+        let table_y_pos = table_y_lines.first().map(|yl| yl.mean_y).unwrap_or(0.0);
 
         debug!(
             columns = columns.len(),
@@ -141,11 +137,7 @@ impl TableDetector {
             .iter()
             .map(|yl| {
                 if yl.block_indices.len() >= MIN_BLOCKS_PER_WIDE_LINE {
-                    let xs: Vec<f64> = yl
-                        .block_indices
-                        .iter()
-                        .map(|&bi| blocks[bi].1.x)
-                        .collect();
+                    let xs: Vec<f64> = yl.block_indices.iter().map(|&bi| blocks[bi].1.x).collect();
                     let min_x = xs.iter().cloned().fold(f64::INFINITY, f64::min);
                     let max_x = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
                     max_x - min_x >= MIN_WIDE_X_RANGE
@@ -167,21 +159,20 @@ impl TableDetector {
         let mut region_last_wide: Option<usize> = None;
         let mut region_wide_count = 0;
 
-        let flush_region =
-            |first_wide: Option<usize>,
-             last_wide: Option<usize>,
-             wide_count: usize,
-             best_start: &mut usize,
-             best_end: &mut usize,
-             best_wide_count: &mut usize| {
-                if let (Some(start), Some(end)) = (first_wide, last_wide) {
-                    if wide_count > *best_wide_count {
-                        *best_start = start;
-                        *best_end = end;
-                        *best_wide_count = wide_count;
-                    }
+        let flush_region = |first_wide: Option<usize>,
+                            last_wide: Option<usize>,
+                            wide_count: usize,
+                            best_start: &mut usize,
+                            best_end: &mut usize,
+                            best_wide_count: &mut usize| {
+            if let (Some(start), Some(end)) = (first_wide, last_wide) {
+                if wide_count > *best_wide_count {
+                    *best_start = start;
+                    *best_end = end;
+                    *best_wide_count = wide_count;
                 }
-            };
+            }
+        };
 
         for i in 0..y_lines.len() {
             if i > 0 {
@@ -278,7 +269,11 @@ impl TableDetector {
             })
             .collect();
 
-        columns.sort_by(|a, b| a.mean_x.partial_cmp(&b.mean_x).unwrap_or(std::cmp::Ordering::Equal));
+        columns.sort_by(|a, b| {
+            a.mean_x
+                .partial_cmp(&b.mean_x)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Merge columns that are too close (within snap_tolerance * 2.0)
         let mut deduped: Vec<Column> = Vec::new();
@@ -334,7 +329,11 @@ impl TableDetector {
             block_indices: current_indices,
         });
 
-        lines.sort_by(|a, b| a.mean_y.partial_cmp(&b.mean_y).unwrap_or(std::cmp::Ordering::Equal));
+        lines.sort_by(|a, b| {
+            a.mean_y
+                .partial_cmp(&b.mean_y)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         lines
     }
 
@@ -635,8 +634,14 @@ mod tests {
         let b7 = make_block("g", 100.0, 140.0);
         let b8 = make_block("h", 250.0, 140.0);
         let blocks = vec![
-            (0, &b1), (1, &b2), (2, &b3), (3, &b4), (4, &b5),
-            (5, &b6), (6, &b7), (7, &b8),
+            (0, &b1),
+            (1, &b2),
+            (2, &b3),
+            (3, &b4),
+            (4, &b5),
+            (5, &b6),
+            (6, &b7),
+            (7, &b8),
         ];
         let y_lines = vec![
             YLine {

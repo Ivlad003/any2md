@@ -544,7 +544,10 @@ impl PdfExtractor {
         for op in &content.operations {
             // Memory safety: cap elements per page
             if elements.len() >= MAX_ELEMENTS_PER_PAGE {
-                warn!("Reached max element limit ({}), truncating page", MAX_ELEMENTS_PER_PAGE);
+                warn!(
+                    "Reached max element limit ({}), truncating page",
+                    MAX_ELEMENTS_PER_PAGE
+                );
                 break;
             }
 
@@ -581,8 +584,8 @@ impl PdfExtractor {
                         };
                         let font_lower = current_font_name.to_lowercase();
                         current_bold = font_lower.contains("bold");
-                        current_italic = font_lower.contains("italic")
-                            || font_lower.contains("oblique");
+                        current_italic =
+                            font_lower.contains("italic") || font_lower.contains("oblique");
                         trace!(font_tag = %current_font_tag, font_size = current_font_size, "Font set");
                     }
                 }
@@ -632,9 +635,15 @@ impl PdfExtractor {
                     let cmap = cmap_tables.get(current_font_tag.as_str());
                     if let Some(text) = Self::extract_tj_text_decoded(&op.operands, cmap) {
                         Self::emit_text_block(
-                            text, &current_font_name, current_font_size,
-                            current_bold, current_italic,
-                            tm_x, tm_y, &mut pending_space, &mut elements,
+                            text,
+                            &current_font_name,
+                            current_font_size,
+                            current_bold,
+                            current_italic,
+                            tm_x,
+                            tm_y,
+                            &mut pending_space,
+                            &mut elements,
                         );
                     }
                 }
@@ -642,9 +651,15 @@ impl PdfExtractor {
                     let cmap = cmap_tables.get(current_font_tag.as_str());
                     if let Some(text) = Self::extract_tj_array_text_decoded(&op.operands, cmap) {
                         Self::emit_text_block(
-                            text, &current_font_name, current_font_size,
-                            current_bold, current_italic,
-                            tm_x, tm_y, &mut pending_space, &mut elements,
+                            text,
+                            &current_font_name,
+                            current_font_size,
+                            current_bold,
+                            current_italic,
+                            tm_x,
+                            tm_y,
+                            &mut pending_space,
+                            &mut elements,
                         );
                     }
                 }
@@ -661,9 +676,15 @@ impl PdfExtractor {
                     if let Some(Object::String(bytes, _)) = op.operands.last() {
                         let text = Self::decode_text_with_cmap(bytes, cmap);
                         Self::emit_text_block(
-                            text, &current_font_name, current_font_size,
-                            current_bold, current_italic,
-                            tm_x, tm_y, &mut pending_space, &mut elements,
+                            text,
+                            &current_font_name,
+                            current_font_size,
+                            current_bold,
+                            current_italic,
+                            tm_x,
+                            tm_y,
+                            &mut pending_space,
+                            &mut elements,
                         );
                     }
                 }
@@ -879,10 +900,7 @@ impl PdfExtractor {
 
     /// Decode raw bytes from a Tj/TJ string using the CMap for the current font.
     /// For Identity-H encoded fonts, bytes are 2-byte CIDs.
-    fn decode_text_with_cmap(
-        raw_bytes: &[u8],
-        cmap: Option<&HashMap<u16, String>>,
-    ) -> String {
+    fn decode_text_with_cmap(raw_bytes: &[u8], cmap: Option<&HashMap<u16, String>>) -> String {
         match cmap {
             Some(table) if !table.is_empty() => {
                 let mut result = String::new();
@@ -997,7 +1015,10 @@ impl PdfExtractor {
 
     /// Fallback: use doc.extract_text() when content stream parsing fails.
     fn extract_page_fallback(doc: &Document, page_num: u32) -> Result<RawPage, ConvertError> {
-        tracing::warn!(page = page_num, "Using fallback text extraction — table detection may be degraded");
+        tracing::warn!(
+            page = page_num,
+            "Using fallback text extraction — table detection may be degraded"
+        );
         let mut elements = Vec::new();
 
         if let Ok(content) = doc.extract_text(&[page_num]) {

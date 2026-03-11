@@ -127,10 +127,7 @@ fn main() {
         "local" => AudioEngine::Local,
         "cloud" => AudioEngine::Cloud,
         other => {
-            eprintln!(
-                "Error: unknown engine '{}'. Use 'local' or 'cloud'.",
-                other
-            );
+            eprintln!("Error: unknown engine '{}'. Use 'local' or 'cloud'.", other);
             process::exit(1);
         }
     };
@@ -231,16 +228,18 @@ fn main() {
 
     // Check if this is an image for OCR (handle engine flag)
     let image_extensions = ["png", "jpg", "jpeg", "tiff", "bmp", "webp"];
-    let is_image = image_extensions
-        .iter()
-        .any(|e| e.eq_ignore_ascii_case(ext));
+    let is_image = image_extensions.iter().any(|e| e.eq_ignore_ascii_case(ext));
     if is_image {
         let ocr_engine = match cli.engine.as_str() {
             "local" => OcrEngine::Local,
             "cloud" => OcrEngine::Cloud,
             _ => OcrEngine::Local,
         };
-        eprintln!("🖼  Converting {} (OCR {:?})...", input.display(), ocr_engine);
+        eprintln!(
+            "🖼  Converting {} (OCR {:?})...",
+            input.display(),
+            ocr_engine
+        );
         let doc = match ImageOcrConverter::convert_with_engine(input, &options, ocr_engine) {
             Ok(d) => d,
             Err(e) => {
@@ -289,7 +288,11 @@ fn main() {
     render_and_write(&doc, &options, &output_path);
 }
 
-fn render_and_write(doc: &any2md::model::document::Document, options: &ConvertOptions, output_path: &Path) {
+fn render_and_write(
+    doc: &any2md::model::document::Document,
+    options: &ConvertOptions,
+    output_path: &Path,
+) {
     debug!("Rendering document to markdown");
 
     let markdown = match MarkdownRenderer::render(doc, options) {

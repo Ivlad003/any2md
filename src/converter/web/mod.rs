@@ -5,13 +5,13 @@ use scraper::{ElementRef, Html, Selector};
 use tracing::{debug, info, warn};
 
 use crate::error::ConvertError;
-use crate::model::document::{
-    Document, Element, ListItem, Metadata, Page, RichText, TextSegment,
-};
+use crate::model::document::{Document, Element, ListItem, Metadata, Page, RichText, TextSegment};
 use crate::model::options::{ConvertOptions, ImageMode};
 
 /// Tags that should be stripped during content extraction (non-content chrome).
-const STRIP_TAGS: &[&str] = &["nav", "footer", "header", "aside", "script", "style", "noscript"];
+const STRIP_TAGS: &[&str] = &[
+    "nav", "footer", "header", "aside", "script", "style", "noscript",
+];
 
 /// Selectors tried in order to locate the main content node.
 const CONTENT_SELECTORS: &[&str] = &["article", "main", "[role=\"main\"]"];
@@ -121,9 +121,9 @@ impl WebConverter {
             .send()
             .map_err(|e| ConvertError::NetworkError(format!("HTTP request failed: {e}")))?;
 
-        let bytes = resp
-            .bytes()
-            .map_err(|e| ConvertError::NetworkError(format!("Failed to read response body: {e}")))?;
+        let bytes = resp.bytes().map_err(|e| {
+            ConvertError::NetworkError(format!("Failed to read response body: {e}"))
+        })?;
 
         if bytes.len() > MAX_HTML_SIZE {
             return Err(ConvertError::NetworkError(format!(
@@ -335,7 +335,16 @@ impl WebConverter {
 
     fn parse_inline(element: ElementRef<'_>, base_url: Option<&str>) -> RichText {
         let mut segments = Vec::new();
-        Self::collect_inline_segments(element, &mut segments, false, false, false, None, base_url, 0);
+        Self::collect_inline_segments(
+            element,
+            &mut segments,
+            false,
+            false,
+            false,
+            None,
+            base_url,
+            0,
+        );
 
         // Trim leading/trailing whitespace from the overall RichText.
         if let Some(first) = segments.first_mut() {
@@ -479,18 +488,15 @@ impl WebConverter {
     fn parse_code_block(pre_element: ElementRef<'_>) -> (Option<String>, String) {
         let code_sel = Selector::parse("code").unwrap();
         let (language, code_text) = if let Some(code_el) = pre_element.select(&code_sel).next() {
-            let lang = code_el
-                .value()
-                .attr("class")
-                .and_then(|cls| {
-                    cls.split_whitespace()
-                        .find(|c| c.starts_with("language-") || c.starts_with("lang-"))
-                        .map(|c| {
-                            c.trim_start_matches("language-")
-                                .trim_start_matches("lang-")
-                                .to_string()
-                        })
-                });
+            let lang = code_el.value().attr("class").and_then(|cls| {
+                cls.split_whitespace()
+                    .find(|c| c.starts_with("language-") || c.starts_with("lang-"))
+                    .map(|c| {
+                        c.trim_start_matches("language-")
+                            .trim_start_matches("lang-")
+                            .to_string()
+                    })
+            });
             let text = code_el.text().collect::<String>();
             (lang, text)
         } else {
@@ -646,7 +652,8 @@ mod tests {
 
     #[test]
     fn test_metadata_author() {
-        let html = r#"<html><head><meta name="author" content="Jane Doe"></head><body></body></html>"#;
+        let html =
+            r#"<html><head><meta name="author" content="Jane Doe"></head><body></body></html>"#;
         let opts = default_options();
         let doc = WebConverter::convert_html(html, None, &opts).unwrap();
         assert_eq!(doc.metadata.author.as_deref(), Some("Jane Doe"));
@@ -654,7 +661,8 @@ mod tests {
 
     #[test]
     fn test_metadata_date_from_meta() {
-        let html = r#"<html><head><meta name="date" content="2025-01-15"></head><body></body></html>"#;
+        let html =
+            r#"<html><head><meta name="date" content="2025-01-15"></head><body></body></html>"#;
         let opts = default_options();
         let doc = WebConverter::convert_html(html, None, &opts).unwrap();
         assert_eq!(doc.metadata.date.as_deref(), Some("2025-01-15"));
@@ -676,12 +684,8 @@ mod tests {
         let elements = &doc.pages[0].elements;
 
         assert!(matches!(&elements[0], Element::Heading { level: 1, text } if text == "Title"));
-        assert!(
-            matches!(&elements[1], Element::Heading { level: 2, text } if text == "Subtitle")
-        );
-        assert!(
-            matches!(&elements[2], Element::Heading { level: 3, text } if text == "Section")
-        );
+        assert!(matches!(&elements[1], Element::Heading { level: 2, text } if text == "Subtitle"));
+        assert!(matches!(&elements[2], Element::Heading { level: 3, text } if text == "Section"));
     }
 
     #[test]
@@ -947,8 +951,7 @@ mod tests {
 
     #[test]
     fn test_resolve_url_relative_no_path() {
-        let resolved =
-            WebConverter::resolve_url("image.png", Some("https://example.com"));
+        let resolved = WebConverter::resolve_url("image.png", Some("https://example.com"));
         assert_eq!(resolved, "https://example.com/image.png");
     }
 
