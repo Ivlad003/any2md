@@ -1,6 +1,8 @@
 {
   "permissions": {
     "allow": [
+      "Edit",
+      "Write",
       "Bash(cargo:*)",
       "Bash(git:*)",
       "Bash(mkdir:*)",
