@@ -4,7 +4,30 @@ CLI utility in Rust for converting various sources to Markdown. Supports PDF fil
 
 ## Installation
 
-### Prerequisites
+### Download Pre-built Binaries
+
+Download the latest release from the [Releases page](https://github.com/Ivlad003/any2md/releases/latest).
+
+| Platform | File |
+|----------|------|
+| macOS (Apple Silicon & Intel) | `any2md-vX.Y.Z-macos-universal.tar.gz` |
+| Linux x86_64 | `any2md-vX.Y.Z-linux-x86_64.tar.gz` |
+| Windows x86_64 | `any2md-vX.Y.Z-windows-x86_64.zip` |
+
+```bash
+# macOS / Linux
+tar xzf any2md-*.tar.gz
+chmod +x any2md
+sudo mv any2md /usr/local/bin/
+
+# Windows (PowerShell)
+Expand-Archive any2md-*.zip -DestinationPath .
+# Move any2md.exe to a directory in your PATH
+```
+
+### Build from Source
+
+#### Prerequisites
 
 | Feature | Requirement |
 |---------|-------------|
@@ -317,6 +340,18 @@ cargo fmt
 # Build release
 cargo build --release
 ```
+
+## Releasing
+
+To publish a new release:
+
+```bash
+# Tag with a version
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+This triggers the release workflow which builds binaries for all platforms and creates a GitHub Release with the artifacts.
 
 ## Dependencies
 
