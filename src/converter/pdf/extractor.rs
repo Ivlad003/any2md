@@ -1,6 +1,7 @@
 use crate::error::ConvertError;
 use lopdf::{Document, Object, ObjectId};
 use std::collections::{BTreeMap, HashMap};
+use std::io::Read;
 use std::path::Path;
 use tracing::{debug, trace, warn};
 
@@ -23,6 +24,9 @@ pub struct RawImage {
     pub height: u32,
 }
 
+/// Minimum pixel area to keep an image (skip tiny decorations like 1x1 spacers)
+const MIN_IMAGE_PIXELS: u32 = 16;
+
 #[derive(Debug, Clone)]
 pub enum RawElement {
     Text(RawTextBlock),
@@ -38,6 +42,174 @@ pub struct PdfMetadata {
     pub title: Option<String>,
     pub author: Option<String>,
     pub date: Option<String>,
+}
+
+/// Document-level metrics computed from actual page data.
+/// Used to replace hardcoded magic numbers with dynamic thresholds.
+#[derive(Debug, Clone)]
+pub struct PageMetrics {
+    /// Most common (mode) font size across all pages
+    pub mode_font_size: f64,
+    /// Median vertical spacing between consecutive text lines
+    pub median_line_spacing: f64,
+    /// Average character width estimated from text blocks
+    pub avg_char_width: f64,
+    /// Total horizontal range of text on the page (max_x - min_x)
+    pub page_x_range: f64,
+}
+
+impl PageMetrics {
+    /// Compute metrics from extracted raw pages.
+    pub fn from_pages(pages: &[RawPage]) -> Self {
+        let mut font_sizes: Vec<f64> = Vec::new();
+        let mut char_widths: Vec<f64> = Vec::new();
+        let mut all_ys: Vec<(usize, f64)> = Vec::new(); // (page_idx, y)
+        let mut min_x = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+
+        for (page_idx, page) in pages.iter().enumerate() {
+            for el in &page.elements {
+                if let RawElement::Text(b) = el {
+                    font_sizes.push(b.font_size);
+                    all_ys.push((page_idx, b.y));
+                    if b.x < min_x {
+                        min_x = b.x;
+                    }
+                    if b.end_x > max_x {
+                        max_x = b.end_x;
+                    }
+                    // Estimate char width from block dimensions
+                    let char_count = b.text.chars().count();
+                    if char_count > 0 {
+                        let width = b.end_x - b.x;
+                        if width > 0.0 {
+                            char_widths.push(width / char_count as f64);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Mode font size (most common)
+        let mode_font_size = Self::compute_mode_font_size(&font_sizes);
+
+        // Median line spacing: sort Ys per page, compute consecutive gaps
+        let median_line_spacing = Self::compute_median_line_spacing(&all_ys);
+
+        // Average char width
+        let avg_char_width = if char_widths.is_empty() {
+            mode_font_size * 0.5
+        } else {
+            char_widths.iter().sum::<f64>() / char_widths.len() as f64
+        };
+
+        let page_x_range = if max_x > min_x {
+            max_x - min_x
+        } else {
+            612.0 // Default US Letter width in points
+        };
+
+        debug!(
+            mode_font_size,
+            median_line_spacing, avg_char_width, page_x_range, "PageMetrics computed"
+        );
+
+        Self {
+            mode_font_size,
+            median_line_spacing,
+            avg_char_width,
+            page_x_range,
+        }
+    }
+
+    fn compute_mode_font_size(sizes: &[f64]) -> f64 {
+        if sizes.is_empty() {
+            return 12.0;
+        }
+        let mut freq: HashMap<u64, usize> = HashMap::new();
+        for &s in sizes {
+            let key = (s * 100.0) as u64;
+            *freq.entry(key).or_insert(0) += 1;
+        }
+        let mode_key = freq.into_iter().max_by_key(|&(_, count)| count).unwrap().0;
+        mode_key as f64 / 100.0
+    }
+
+    fn compute_median_line_spacing(ys: &[(usize, f64)]) -> f64 {
+        if ys.len() < 2 {
+            return 14.0; // Sensible default
+        }
+        // Group by page, sort within page, compute gaps
+        let mut page_ys: HashMap<usize, Vec<f64>> = HashMap::new();
+        for &(page_idx, y) in ys {
+            page_ys.entry(page_idx).or_default().push(y);
+        }
+        let mut gaps: Vec<f64> = Vec::new();
+        for (_, mut page_y_vals) in page_ys {
+            page_y_vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            page_y_vals.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+            for w in page_y_vals.windows(2) {
+                let gap = (w[1] - w[0]).abs();
+                // Only count reasonable line spacings (not page breaks)
+                if gap > 1.0 && gap < 100.0 {
+                    gaps.push(gap);
+                }
+            }
+        }
+        if gaps.is_empty() {
+            return 14.0;
+        }
+        gaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        gaps[gaps.len() / 2]
+    }
+
+    // ── Derived thresholds ────────────────
+
+    /// Y tolerance for grouping blocks into the same visual line.
+    pub fn y_line_tolerance(&self) -> f64 {
+        (self.mode_font_size * 0.25).max(1.5)
+    }
+
+    /// Minimum X-range for a Y-line to be considered "wide" (spanning multiple columns).
+    pub fn min_wide_x_range(&self) -> f64 {
+        (self.page_x_range * 0.33).max(100.0)
+    }
+
+    /// Maximum Y gap between consecutive table rows before breaking the region.
+    pub fn table_max_y_gap(&self) -> f64 {
+        (self.median_line_spacing * 6.0).max(30.0)
+    }
+
+    /// X snap tolerance for column edge detection.
+    pub fn snap_tolerance(&self) -> f64 {
+        self.avg_char_width.max(3.0)
+    }
+
+    /// Small Y-gap for extending table with continuation lines after last wide row.
+    pub fn table_continuation_gap(&self) -> f64 {
+        (self.median_line_spacing * 2.0).max(10.0)
+    }
+
+    /// X-distance threshold to assign a block to a column.
+    pub fn column_assign_distance(&self) -> f64 {
+        // Use a fraction of the average column spacing, fallback to reasonable default
+        (self.avg_char_width * 8.0).max(20.0)
+    }
+
+    /// X tolerance for "same X" in paragraph/list continuation merging.
+    pub fn same_x_tolerance(&self) -> f64 {
+        self.avg_char_width.max(3.0)
+    }
+
+    /// Y gap threshold for paragraph/list continuation merging.
+    pub fn line_height_threshold(&self) -> f64 {
+        (self.median_line_spacing * 1.5).max(self.mode_font_size * 1.5)
+    }
+
+    /// X-distance for "close X" in list item continuation.
+    pub fn list_close_x(&self) -> f64 {
+        (self.avg_char_width * 5.0).max(15.0)
+    }
 }
 
 // --- Thresholds and limits ---
@@ -479,20 +651,246 @@ impl PdfExtractor {
                     continue;
                 }
 
-                let data = stream.content.clone();
-                if data.is_empty() {
+                // Skip tiny decoration images (spacers, dots, etc.)
+                if width * height < MIN_IMAGE_PIXELS {
+                    trace!(width, height, "Skipping tiny image");
                     continue;
                 }
 
-                images.push(RawImage {
-                    data,
+                let raw_data = stream.content.clone();
+                if raw_data.is_empty() {
+                    continue;
+                }
+
+                // Check for PNG predictor in DecodeParms
+                let predictor = stream
+                    .dict
+                    .get(b"DecodeParms")
+                    .ok()
+                    .and_then(|p| p.as_dict().ok())
+                    .and_then(|d| d.get(b"Predictor").ok())
+                    .and_then(Self::obj_to_f64)
+                    .unwrap_or(1.0) as u32;
+
+                debug!(
                     width,
                     height,
-                });
+                    raw_bytes = raw_data.len(),
+                    predictor,
+                    first_bytes = format!("{:02x} {:02x} {:02x} {:02x}",
+                        raw_data.get(0).unwrap_or(&0),
+                        raw_data.get(1).unwrap_or(&0),
+                        raw_data.get(2).unwrap_or(&0),
+                        raw_data.get(3).unwrap_or(&0)),
+                    "Image stream raw data"
+                );
+
+                // Determine color space to know bytes per pixel
+                let bpc = stream
+                    .dict
+                    .get(b"BitsPerComponent")
+                    .ok()
+                    .and_then(Self::obj_to_f64)
+                    .unwrap_or(8.0) as u32;
+
+                let color_space = Self::get_color_space_name(&stream.dict, doc);
+                let channels = match color_space.as_str() {
+                    "DeviceGray" | "CalGray" => 1u32,
+                    "DeviceCMYK" | "CalCMYK" => 4,
+                    _ => 3, // DeviceRGB, CalRGB, or unknown → assume RGB
+                };
+
+                // Check if the data is already a known image format (JPEG, PNG)
+                let filter = Self::get_filter_name(&stream.dict);
+                let png_data = if filter == "DCTDecode" {
+                    // JPEG data — already a valid image, wrap as-is
+                    // The renderer saves as .png but we'll store JPEG data
+                    // and detect format at save time
+                    Some(raw_data.clone())
+                } else {
+                    // Raw pixel data (possibly zlib/FlateDecode compressed)
+                    Self::encode_raw_to_png(&raw_data, width, height, channels, bpc, &filter)
+                };
+
+                if let Some(data) = png_data {
+                    images.push(RawImage {
+                        data,
+                        width,
+                        height,
+                    });
+                } else {
+                    debug!(
+                        width,
+                        height,
+                        filter = filter.as_str(),
+                        color_space = color_space.as_str(),
+                        "Skipping image: could not decode"
+                    );
+                }
             }
         }
 
         images
+    }
+
+    /// Get the color space name from a stream dictionary.
+    fn get_color_space_name(dict: &lopdf::Dictionary, doc: &Document) -> String {
+        match dict.get(b"ColorSpace") {
+            Ok(obj) => {
+                let resolved = Self::resolve_object(doc, obj);
+                match resolved {
+                    Object::Name(n) => String::from_utf8_lossy(n).to_string(),
+                    Object::Array(arr) if !arr.is_empty() => {
+                        // e.g. [/ICCBased 10 0 R] — use the base name
+                        match &arr[0] {
+                            Object::Name(n) => String::from_utf8_lossy(n).to_string(),
+                            _ => "DeviceRGB".to_string(),
+                        }
+                    }
+                    _ => "DeviceRGB".to_string(),
+                }
+            }
+            Err(_) => "DeviceRGB".to_string(),
+        }
+    }
+
+    /// Get the filter name from a stream dictionary.
+    fn get_filter_name(dict: &lopdf::Dictionary) -> String {
+        match dict.get(b"Filter") {
+            Ok(Object::Name(n)) => String::from_utf8_lossy(n).to_string(),
+            Ok(Object::Array(arr)) if !arr.is_empty() => match &arr[0] {
+                Object::Name(n) => String::from_utf8_lossy(n).to_string(),
+                _ => String::new(),
+            },
+            _ => String::new(),
+        }
+    }
+
+    /// Encode raw pixel data (from PDF stream) into a valid PNG.
+    fn encode_raw_to_png(
+        raw_data: &[u8],
+        width: u32,
+        height: u32,
+        channels: u32,
+        bpc: u32,
+        filter: &str,
+    ) -> Option<Vec<u8>> {
+        // Decompress if FlateDecode (zlib)
+        let pixels = if filter == "FlateDecode" || filter.is_empty() {
+            // Try zlib decompression first
+            let mut decoded = Vec::new();
+            if flate2::read::ZlibDecoder::new(raw_data)
+                .read_to_end(&mut decoded)
+                .is_ok()
+                && !decoded.is_empty()
+            {
+                decoded
+            } else {
+                // Maybe deflate (not zlib) or already raw
+                decoded.clear();
+                if flate2::read::DeflateDecoder::new(raw_data)
+                    .read_to_end(&mut decoded)
+                    .is_ok()
+                    && !decoded.is_empty()
+                {
+                    decoded
+                } else {
+                    raw_data.to_vec() // Treat as raw
+                }
+            }
+        } else {
+            return None; // Unsupported filter (JBIG2, JPXDecode, etc.)
+        };
+
+        let expected_len = (width * height * channels * bpc / 8) as usize;
+        debug!(
+            decompressed = pixels.len(),
+            expected = expected_len,
+            filter,
+            width,
+            height,
+            channels,
+            bpc,
+            "Image decode stats"
+        );
+        // Allow some tolerance for padding
+        if pixels.len() < expected_len.saturating_sub(width as usize) {
+            debug!(
+                actual = pixels.len(),
+                expected = expected_len,
+                "Pixel data length mismatch"
+            );
+            return None;
+        }
+
+        // Encode as PNG using the image crate
+        let color_type = match channels {
+            1 => image::ColorType::L8,
+            3 => image::ColorType::Rgb8,
+            4 => {
+                // CMYK → convert to RGB
+                let mut rgb = Vec::with_capacity((width * height * 3) as usize);
+                for chunk in pixels.chunks(4) {
+                    if chunk.len() < 4 {
+                        break;
+                    }
+                    let (c, m, y, k) = (
+                        chunk[0] as f32,
+                        chunk[1] as f32,
+                        chunk[2] as f32,
+                        chunk[3] as f32,
+                    );
+                    let r = 255.0 * (1.0 - c / 255.0) * (1.0 - k / 255.0);
+                    let g = 255.0 * (1.0 - m / 255.0) * (1.0 - k / 255.0);
+                    let b = 255.0 * (1.0 - y / 255.0) * (1.0 - k / 255.0);
+                    rgb.push(r as u8);
+                    rgb.push(g as u8);
+                    rgb.push(b as u8);
+                }
+                return Self::write_png_bytes(width, height, &rgb, image::ColorType::Rgb8);
+            }
+            _ => return None,
+        };
+
+        Self::write_png_bytes(width, height, &pixels, color_type)
+    }
+
+    /// Write pixel data as PNG to a byte vector.
+    /// Uses the image crate to create an in-memory image and encode it,
+    /// which validates the data and produces universally compatible PNGs.
+    fn write_png_bytes(
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+        color_type: image::ColorType,
+    ) -> Option<Vec<u8>> {
+        // Build an image buffer from raw pixels and save as PNG via the image crate.
+        // This produces properly structured PNGs that all viewers can open.
+        let img = match color_type {
+            image::ColorType::L8 => {
+                let buf = image::GrayImage::from_raw(width, height, pixels.to_vec())?;
+                image::DynamicImage::ImageLuma8(buf)
+            }
+            image::ColorType::Rgb8 => {
+                let buf = image::RgbImage::from_raw(width, height, pixels.to_vec())?;
+                image::DynamicImage::ImageRgb8(buf)
+            }
+            image::ColorType::Rgba8 => {
+                let buf = image::RgbaImage::from_raw(width, height, pixels.to_vec())?;
+                image::DynamicImage::ImageRgba8(buf)
+            }
+            _ => return None,
+        };
+
+        let mut png_buf = Vec::new();
+        let cursor = std::io::Cursor::new(&mut png_buf);
+        match img.write_to(cursor, image::ImageFormat::Png) {
+            Ok(()) => Some(png_buf),
+            Err(e) => {
+                debug!(error = %e, "Failed to encode PNG");
+                None
+            }
+        }
     }
 
     /// Resolve an object reference, returning the referenced object or the object itself.

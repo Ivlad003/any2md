@@ -140,7 +140,6 @@ impl Classifier {
         for page in pages {
             for el in &page.elements {
                 if let RawElement::Text(block) = el {
-                    // Quantize to avoid floating-point comparison issues
                     let key = (block.font_size * 100.0) as u64;
                     *freq.entry(key).or_insert(0) += 1;
                 }

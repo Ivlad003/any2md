@@ -1,12 +1,9 @@
-use crate::converter::pdf::extractor::{RawElement, RawPage, RawTextBlock};
+use crate::converter::pdf::extractor::{PageMetrics, RawElement, RawPage, RawTextBlock};
 use crate::model::document::Element;
 use tracing::debug;
 
-const Y_LINE_TOLERANCE: f64 = 3.0;
 const MIN_TABLE_COLUMNS: usize = 3;
 const MIN_TABLE_ROWS: usize = 2;
-/// Minimum X-range for a Y-line to be considered "wide" (spanning multiple columns)
-const MIN_WIDE_X_RANGE: f64 = 200.0;
 /// Minimum number of blocks in a Y-line to consider it potentially tabular
 const MIN_BLOCKS_PER_WIDE_LINE: usize = 3;
 
@@ -34,7 +31,7 @@ struct YLine {
 }
 
 impl TableDetector {
-    pub fn detect(page: &RawPage) -> TableDetectionResult {
+    pub fn detect(page: &RawPage, metrics: &PageMetrics) -> TableDetectionResult {
         let text_blocks: Vec<(usize, &RawTextBlock)> = page
             .elements
             .iter()
@@ -46,34 +43,83 @@ impl TableDetector {
             .collect();
 
         if text_blocks.len() < 6 {
+            debug!(
+                blocks = text_blocks.len(),
+                "Table detection: too few blocks"
+            );
             return Self::no_table(page);
         }
 
         // Step 1: Group blocks into visual Y-lines
-        let y_lines = Self::group_y_lines(&text_blocks);
+        let y_line_tolerance = metrics.y_line_tolerance();
+        let y_lines = Self::group_y_lines(&text_blocks, y_line_tolerance);
+        debug!(
+            y_lines = y_lines.len(),
+            text_blocks = text_blocks.len(),
+            "Table detection: Y-lines grouped"
+        );
 
         // Step 2: Find the table Y-region by looking for Y-lines with wide X-spread
-        let (table_start, table_end) = match Self::find_table_y_region(&y_lines, &text_blocks) {
-            Some(range) => range,
-            None => return Self::no_table(page),
-        };
+        let min_wide_x_range = metrics.min_wide_x_range();
+        let (table_start, table_end) =
+            match Self::find_table_y_region(&y_lines, &text_blocks, metrics) {
+                Some(range) => range,
+                None => {
+                    // Log wide-line stats for debugging
+                    let wide_count = y_lines
+                        .iter()
+                        .filter(|yl| {
+                            if yl.block_indices.len() >= MIN_BLOCKS_PER_WIDE_LINE {
+                                let xs: Vec<f64> = yl
+                                    .block_indices
+                                    .iter()
+                                    .map(|&bi| text_blocks[bi].1.x)
+                                    .collect();
+                                let min_x = xs.iter().cloned().fold(f64::INFINITY, f64::min);
+                                let max_x = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                                max_x - min_x >= min_wide_x_range
+                            } else {
+                                false
+                            }
+                        })
+                        .count();
+                    debug!(
+                        wide_count,
+                        y_lines = y_lines.len(),
+                        "Table detection: no table Y-region found"
+                    );
+                    return Self::no_table(page);
+                }
+            };
 
         // Step 3: Collect blocks within the table region, detect columns by text-edge alignment
         let table_y_lines = &y_lines[table_start..=table_end];
+        debug!(
+            table_start,
+            table_end,
+            table_y_lines = table_y_lines.len(),
+            "Table detection: Y-region found"
+        );
 
-        let columns = Self::cluster_x_positions_by_edges(table_y_lines, &text_blocks);
+        let columns = Self::cluster_x_positions_by_edges(table_y_lines, &text_blocks, metrics);
         if columns.len() < MIN_TABLE_COLUMNS {
+            debug!(
+                columns = columns.len(),
+                min_required = MIN_TABLE_COLUMNS,
+                "Table detection: too few columns"
+            );
             return Self::no_table(page);
         }
 
         // Step 4: Detect rows within the table region
-        let rows = Self::detect_rows(table_y_lines, &text_blocks, &columns);
+        let rows = Self::detect_rows(table_y_lines, &text_blocks, &columns, metrics);
         if rows.len() < MIN_TABLE_ROWS {
             return Self::no_table(page);
         }
 
         // Step 5: Build the table element
-        let table_element = match Self::build_table(&text_blocks, &columns, &rows) {
+        let col_dist = metrics.column_assign_distance();
+        let table_element = match Self::build_table(&text_blocks, &columns, &rows, col_dist) {
             Some(el) => el,
             None => return Self::no_table(page),
         };
@@ -128,9 +174,10 @@ impl TableDetector {
     fn find_table_y_region(
         y_lines: &[YLine],
         blocks: &[(usize, &RawTextBlock)],
+        metrics: &PageMetrics,
     ) -> Option<(usize, usize)> {
-        // Maximum Y gap between consecutive lines to be considered same region
-        let max_y_gap = 100.0;
+        let max_y_gap = metrics.table_max_y_gap();
+        let min_wide_x_range = metrics.min_wide_x_range();
 
         // Mark which Y-lines are "wide"
         let wide: Vec<bool> = y_lines
@@ -140,7 +187,7 @@ impl TableDetector {
                     let xs: Vec<f64> = yl.block_indices.iter().map(|&bi| blocks[bi].1.x).collect();
                     let min_x = xs.iter().cloned().fold(f64::INFINITY, f64::min);
                     let max_x = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-                    max_x - min_x >= MIN_WIDE_X_RANGE
+                    max_x - min_x >= min_wide_x_range
                 } else {
                     false
                 }
@@ -212,10 +259,11 @@ impl TableDetector {
 
         if best_wide_count >= MIN_TABLE_ROWS && best_end > best_start {
             // Extend to include narrow continuation lines after last wide line
+            let continuation_gap = metrics.table_continuation_gap();
             let mut extended_end = best_end;
             for i in (best_end + 1)..y_lines.len() {
                 let y_gap = (y_lines[i].mean_y - y_lines[i - 1].mean_y).abs();
-                if y_gap > 30.0 {
+                if y_gap > continuation_gap {
                     break;
                 }
                 extended_end = i;
@@ -232,8 +280,9 @@ impl TableDetector {
     fn cluster_x_positions_by_edges(
         table_y_lines: &[YLine],
         blocks: &[(usize, &RawTextBlock)],
+        metrics: &PageMetrics,
     ) -> Vec<Column> {
-        let snap_tolerance = 8.0;
+        let snap_tolerance = metrics.snap_tolerance();
 
         // Collect all left-edge X positions, snapped to grid
         let mut edge_counts: std::collections::BTreeMap<i64, (f64, usize)> =
@@ -258,8 +307,11 @@ impl TableDetector {
             }
         }
 
-        // Keep edges that appear in at least 30% of Y-lines (or at least 2 lines)
-        let min_appearances = (num_y_lines as f64 * 0.3).ceil().max(2.0) as usize;
+        // Keep edges that appear in enough Y-lines to be considered a column.
+        // For tables with many continuation rows, use a lower percentage
+        // since column headers only appear in "new row" lines, not continuations.
+        let pct = if num_y_lines > 20 { 0.10 } else { 0.30 };
+        let min_appearances = (num_y_lines as f64 * pct).ceil().max(2.0) as usize;
 
         let mut columns: Vec<Column> = edge_counts
             .values()
@@ -289,7 +341,7 @@ impl TableDetector {
         deduped
     }
 
-    fn group_y_lines(blocks: &[(usize, &RawTextBlock)]) -> Vec<YLine> {
+    fn group_y_lines(blocks: &[(usize, &RawTextBlock)], y_tolerance: f64) -> Vec<YLine> {
         if blocks.is_empty() {
             return vec![];
         }
@@ -310,7 +362,7 @@ impl TableDetector {
         for &si in &sorted_indices[1..] {
             let y = blocks[si].1.y;
             let mean_y: f64 = current_ys.iter().sum::<f64>() / current_ys.len() as f64;
-            if (y - mean_y).abs() <= Y_LINE_TOLERANCE {
+            if (y - mean_y).abs() <= y_tolerance {
                 current_ys.push(y);
                 current_indices.push(si);
             } else {
@@ -337,7 +389,7 @@ impl TableDetector {
         lines
     }
 
-    fn find_column(x: f64, columns: &[Column]) -> Option<usize> {
+    fn find_column(x: f64, columns: &[Column], max_distance: f64) -> Option<usize> {
         columns
             .iter()
             .enumerate()
@@ -347,7 +399,7 @@ impl TableDetector {
                     .partial_cmp(&(x - b.mean_x).abs())
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
-            .filter(|(_, col)| (x - col.mean_x).abs() < 50.0)
+            .filter(|(_, col)| (x - col.mean_x).abs() < max_distance)
             .map(|(i, _)| i)
     }
 
@@ -358,18 +410,20 @@ impl TableDetector {
         table_y_lines: &'a [YLine],
         blocks: &[(usize, &RawTextBlock)],
         columns: &[Column],
+        metrics: &PageMetrics,
     ) -> Vec<Vec<&'a YLine>> {
         if table_y_lines.is_empty() {
             return vec![];
         }
 
+        let col_dist = metrics.column_assign_distance();
         let line_col_counts: Vec<usize> = table_y_lines
             .iter()
             .map(|yl| {
                 let mut col_set = std::collections::HashSet::new();
                 for &bi in &yl.block_indices {
                     let (_, block) = &blocks[bi];
-                    if let Some(ci) = Self::find_column(block.x, columns) {
+                    if let Some(ci) = Self::find_column(block.x, columns, col_dist) {
                         col_set.insert(ci);
                     }
                 }
@@ -393,6 +447,7 @@ impl TableDetector {
         blocks: &[(usize, &RawTextBlock)],
         columns: &[Column],
         rows: &[Vec<&YLine>],
+        col_dist: f64,
     ) -> Option<Element> {
         if rows.len() < MIN_TABLE_ROWS {
             return None;
@@ -415,7 +470,7 @@ impl TableDetector {
                 });
                 for &bi in &sorted_bis {
                     let (_, block) = &blocks[bi];
-                    if let Some(ci) = Self::find_column(block.x, columns) {
+                    if let Some(ci) = Self::find_column(block.x, columns, col_dist) {
                         cells[ci].push(block.text.clone());
                     }
                 }
@@ -468,13 +523,22 @@ mod tests {
         }
     }
 
+    fn test_metrics() -> PageMetrics {
+        PageMetrics {
+            mode_font_size: 14.7,
+            median_line_spacing: 17.0,
+            avg_char_width: 7.35,
+            page_x_range: 500.0,
+        }
+    }
+
     #[test]
     fn test_no_table_when_too_few_blocks() {
         let page = make_page(vec![
             make_block("Hello", 50.0, 100.0),
             make_block("World", 50.0, 120.0),
         ]);
-        let result = TableDetector::detect(&page);
+        let result = TableDetector::detect(&page, &test_metrics());
         assert!(result.tables.is_empty());
         assert_eq!(result.remaining_elements.len(), 2);
     }
@@ -490,7 +554,7 @@ mod tests {
             make_block("Line 5", 80.0, 180.0),
             make_block("Line 6", 50.0, 200.0),
         ]);
-        let result = TableDetector::detect(&page);
+        let result = TableDetector::detect(&page, &test_metrics());
         assert!(result.tables.is_empty());
     }
 
@@ -513,7 +577,7 @@ mod tests {
             make_block("Int", 250.0, 180.0),
             make_block("Another", 400.0, 180.0),
         ]);
-        let result = TableDetector::detect(&page);
+        let result = TableDetector::detect(&page, &test_metrics());
         assert_eq!(result.tables.len(), 1);
         if let Element::Table { headers, rows } = &result.tables[0].element {
             assert_eq!(headers.len(), 4);
@@ -545,7 +609,7 @@ mod tests {
             make_block("Bar", 150.0, 200.0),
             make_block("Simple", 350.0, 200.0),
         ]);
-        let result = TableDetector::detect(&page);
+        let result = TableDetector::detect(&page, &test_metrics());
         assert_eq!(result.tables.len(), 1);
         if let Element::Table { headers, rows } = &result.tables[0].element {
             assert_eq!(headers.len(), 3);
@@ -581,7 +645,7 @@ mod tests {
             }),
         ];
         let page = RawPage { elements };
-        let result = TableDetector::detect(&page);
+        let result = TableDetector::detect(&page, &test_metrics());
         assert_eq!(result.tables.len(), 1);
         let remaining_texts: Vec<&str> = result
             .remaining_elements
@@ -613,7 +677,7 @@ mod tests {
             make_block("c", 150.0, 140.0),
             make_block("d", 350.0, 140.0),
         ]);
-        let result = TableDetector::detect(&page);
+        let result = TableDetector::detect(&page, &test_metrics());
         assert_eq!(result.tables.len(), 1);
         if let Element::Table { rows, .. } = &result.tables[0].element {
             assert_eq!(rows[0][0], "a\\|b");
@@ -653,7 +717,8 @@ mod tests {
                 block_indices: vec![5, 6, 7],
             },
         ];
-        let columns = TableDetector::cluster_x_positions_by_edges(&y_lines, &blocks);
+        let columns =
+            TableDetector::cluster_x_positions_by_edges(&y_lines, &blocks, &test_metrics());
         assert_eq!(columns.len(), 3);
     }
 
@@ -677,7 +742,7 @@ mod tests {
             // Narrow continuation AFTER last wide row
             make_block("F more", 400.0, 217.0),
         ]);
-        let result = TableDetector::detect(&page);
+        let result = TableDetector::detect(&page, &test_metrics());
         assert_eq!(result.tables.len(), 1);
         if let Element::Table { rows, .. } = &result.tables[0].element {
             // The continuation line "F more" should be in the last row
@@ -726,7 +791,7 @@ mod tests {
             make_block("Regle2", 1080.3, 180.0),
             make_block("ok", 1411.0, 180.0),
         ]);
-        let result = TableDetector::detect(&page);
+        let result = TableDetector::detect(&page, &test_metrics());
         assert_eq!(result.tables.len(), 1);
         if let Element::Table { headers, rows } = &result.tables[0].element {
             assert_eq!(

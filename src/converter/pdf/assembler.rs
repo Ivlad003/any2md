@@ -1,20 +1,114 @@
 use crate::converter::pdf::classifier::{BlockType, ClassifiedElement};
-use crate::converter::pdf::extractor::RawTextBlock;
+use crate::converter::pdf::extractor::{PageMetrics, RawTextBlock};
 use crate::model::document::*;
 
 pub struct Assembler;
 
+// ── Header/footer noise patterns ────────────────
+/// Matches standalone page indicators like "1/3", "12/30"
+fn is_page_number(text: &str) -> bool {
+    let t = text.trim();
+    if let Some(pos) = t.find('/') {
+        let left = &t[..pos];
+        let right = &t[pos + 1..];
+        left.chars().all(|c| c.is_ascii_digit())
+            && right.chars().all(|c| c.is_ascii_digit())
+            && !left.is_empty()
+            && !right.is_empty()
+    } else {
+        false
+    }
+}
+
+/// Matches timestamps like "12/03/2026, 12:41"
+fn is_timestamp_line(text: &str) -> bool {
+    let t = text.trim();
+    // Pattern: dd/mm/yyyy, HH:MM or similar
+    if t.len() >= 10 && t.len() <= 25 {
+        let has_date_slash = t.chars().filter(|&c| c == '/').count() == 2;
+        let has_colon = t.contains(':');
+        let has_comma = t.contains(',');
+        has_date_slash && has_colon && has_comma
+    } else {
+        false
+    }
+}
+
+/// Check if a line is likely header/footer noise
+fn is_header_footer_noise(text: &str) -> bool {
+    let t = text.trim();
+    if t.is_empty() {
+        return true;
+    }
+    // Standalone "OneNote"
+    if t == "OneNote" {
+        return true;
+    }
+    // Page numbers like "1/3"
+    if is_page_number(t) {
+        return true;
+    }
+    // Timestamps
+    if is_timestamp_line(t) {
+        return true;
+    }
+    // Very long SharePoint/OneNote URLs that are just navigation artifacts
+    if t.starts_with("https://") && t.len() > 150 && t.contains("sharepoint.com") {
+        return true;
+    }
+    false
+}
+
+/// Check if text ends in a way that suggests the sentence continues
+fn text_continues(text: &str) -> bool {
+    let t = text.trim();
+    if t.is_empty() {
+        return false;
+    }
+    let last = t.chars().last().unwrap();
+    // Ends with hyphen = word break
+    if last == '-' && !t.ends_with(" -") && !t.ends_with(" —") {
+        return true;
+    }
+    // Doesn't end with sentence-ending punctuation = likely continues
+    !matches!(
+        last,
+        '.' | '!' | '?' | ':' | ';' | ')' | ']' | '}' | '"' | '»'
+    )
+}
+
+/// Check if text starts with lowercase (likely continuation of previous sentence)
+fn starts_lowercase(text: &str) -> bool {
+    let t = text.trim();
+    t.chars().next().map(|c| c.is_lowercase()).unwrap_or(false)
+}
+
 impl Assembler {
-    pub fn assemble(classified_pages: Vec<Vec<ClassifiedElement>>, metadata: Metadata) -> Document {
+    pub fn assemble(
+        classified_pages: Vec<Vec<ClassifiedElement>>,
+        metadata: Metadata,
+        metrics: &PageMetrics,
+    ) -> Document {
         let pages = classified_pages
             .into_iter()
-            .map(Self::assemble_page)
+            .map(|elems| Self::assemble_page(Self::filter_noise(elems), metrics))
             .collect();
 
         Document { metadata, pages }
     }
 
-    fn assemble_page(elems: Vec<ClassifiedElement>) -> Page {
+    /// Remove header/footer noise elements
+    fn filter_noise(elems: Vec<ClassifiedElement>) -> Vec<ClassifiedElement> {
+        elems
+            .into_iter()
+            .filter(|el| match el {
+                ClassifiedElement::Text(block, _) => !is_header_footer_noise(&block.text),
+                _ => true,
+            })
+            .collect()
+    }
+
+    fn assemble_page(elems: Vec<ClassifiedElement>, metrics: &PageMetrics) -> Page {
         let mut elements = Vec::new();
         let mut i = 0;
 
@@ -36,9 +130,11 @@ impl Assembler {
                         let mut heading_text = block.text.clone();
                         let heading_level = *level;
                         let mut last_y = block.y;
-                        let last_font_size = block.font_size;
                         i += 1;
                         // Merge consecutive headings at the same level (wrapped text)
+                        // Use the heading's own font size for the gap, since headings are larger
+                        let heading_merge_gap =
+                            (block.font_size * 2.0).max(metrics.line_height_threshold());
                         while i < elems.len() {
                             if let ClassifiedElement::Text(
                                 next_block,
@@ -47,7 +143,7 @@ impl Assembler {
                             {
                                 if *next_level == heading_level {
                                     let y_gap = (next_block.y - last_y).abs();
-                                    if y_gap < last_font_size * 2.0 {
+                                    if y_gap < heading_merge_gap {
                                         heading_text.push(' ');
                                         heading_text.push_str(&next_block.text);
                                         last_y = next_block.y;
@@ -85,11 +181,36 @@ impl Assembler {
                         while i < elems.len() {
                             if let ClassifiedElement::Text(b, BlockType::ListItem) = &elems[i] {
                                 let text = Self::strip_list_marker(&b.text);
+                                let mut item_y = b.y;
+                                let item_x = b.x;
+                                let mut item_text = text.clone();
+                                let item_block = b;
+                                i += 1;
+
+                                // Merge continuation paragraphs into this list item
+                                let list_close_x = metrics.list_close_x();
+                                let list_line_height = metrics.line_height_threshold();
+                                while i < elems.len() {
+                                    if let ClassifiedElement::Text(nb, BlockType::Paragraph) =
+                                        &elems[i]
+                                    {
+                                        let y_gap = (nb.y - item_y).abs();
+                                        let close_x = (nb.x - item_x).abs() < list_close_x;
+                                        let line_height = list_line_height;
+                                        if close_x && y_gap < line_height {
+                                            Self::append_continuation(&mut item_text, &nb.text);
+                                            item_y = nb.y;
+                                            i += 1;
+                                            continue;
+                                        }
+                                    }
+                                    break;
+                                }
+
                                 items.push(ListItem {
-                                    text: Self::rich_text_from_block(&text, b),
+                                    text: Self::rich_text_from_block(&item_text, item_block),
                                     children: vec![],
                                 });
-                                i += 1;
                             } else {
                                 break;
                             }
@@ -105,34 +226,49 @@ impl Assembler {
                     BlockType::Paragraph => {
                         let mut para_text = block.text.clone();
                         let mut current_y = block.y;
+                        let mut current_bold = block.has_bold;
+                        let mut current_italic = block.has_italic;
                         i += 1;
 
-                        // Merge URL continuations: if text contains "://" and ends with '-',
-                        // the next paragraph at same X is likely a wrapped URL
+                        // Merge continuation paragraphs: same X, close Y, text flows
+                        let same_x_tol = metrics.same_x_tolerance();
+                        let para_line_height = metrics.line_height_threshold();
                         while i < elems.len() {
                             if let ClassifiedElement::Text(next_block, BlockType::Paragraph) =
                                 &elems[i]
                             {
                                 let y_gap = (next_block.y - current_y).abs();
-                                let same_x = (next_block.x - block.x).abs() < 5.0;
-                                let line_height = block.font_size * 1.5;
+                                let same_x = (next_block.x - block.x).abs() < same_x_tol;
+                                let line_height = para_line_height;
 
-                                if same_x
-                                    && y_gap < line_height
-                                    && para_text.contains("://")
-                                    && para_text.ends_with('-')
-                                {
-                                    para_text.push_str(&next_block.text);
-                                    current_y = next_block.y;
-                                    i += 1;
-                                    continue;
+                                if same_x && y_gap < line_height {
+                                    // Always merge if: URL continuation, text continues,
+                                    // or next line starts lowercase
+                                    let is_url_cont =
+                                        para_text.contains("://") && para_text.ends_with('-');
+                                    let flowing = text_continues(&para_text)
+                                        || starts_lowercase(&next_block.text);
+                                    let same_style = block.has_bold == next_block.has_bold
+                                        && block.has_italic == next_block.has_italic;
+
+                                    if is_url_cont || flowing || same_style {
+                                        Self::append_continuation(&mut para_text, &next_block.text);
+                                        current_y = next_block.y;
+                                        current_bold = current_bold || next_block.has_bold;
+                                        current_italic = current_italic || next_block.has_italic;
+                                        i += 1;
+                                        continue;
+                                    }
                                 }
                             }
                             break;
                         }
 
+                        let mut result_block = block.clone();
+                        result_block.has_bold = current_bold;
+                        result_block.has_italic = current_italic;
                         elements.push(Element::Paragraph {
-                            text: Self::rich_text_from_block(&para_text, block),
+                            text: Self::rich_text_from_block(&para_text, &result_block),
                         });
                     }
                 },
@@ -140,6 +276,24 @@ impl Assembler {
         }
 
         Page { elements }
+    }
+
+    /// Append continuation text, handling hyphenated word breaks
+    fn append_continuation(existing: &mut String, next: &str) {
+        let trimmed = existing.trim_end();
+        let is_url = trimmed.contains("://");
+        if trimmed.ends_with('-') && !trimmed.ends_with(" -") && !trimmed.ends_with("--") && !is_url
+        {
+            // Hyphenated word break: remove hyphen and join directly
+            existing.truncate(existing.trim_end().len() - 1);
+            existing.push_str(next);
+        } else if is_url && trimmed.ends_with('-') {
+            // URL continuation: keep hyphen, no space
+            existing.push_str(next);
+        } else {
+            existing.push(' ');
+            existing.push_str(next);
+        }
     }
 
     fn strip_list_marker(text: &str) -> String {
@@ -229,6 +383,15 @@ mod tests {
         }
     }
 
+    fn test_metrics() -> PageMetrics {
+        PageMetrics {
+            mode_font_size: 12.0,
+            median_line_spacing: 14.0,
+            avg_char_width: 6.0,
+            page_x_range: 468.0, // Standard US Letter text area
+        }
+    }
+
     fn ce(block: RawTextBlock, bt: BlockType) -> ClassifiedElement {
         ClassifiedElement::Text(block, bt)
     }
@@ -239,7 +402,7 @@ mod tests {
             ce(make_block("Title"), BlockType::Heading(1)),
             ce(make_block("Subtitle"), BlockType::Heading(2)),
         ];
-        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        let doc = Assembler::assemble(vec![blocks], empty_metadata(), &test_metrics());
         assert_eq!(doc.pages.len(), 1);
         assert!(
             matches!(&doc.pages[0].elements[0], Element::Heading { level: 1, text } if text == "Title")
@@ -256,7 +419,7 @@ mod tests {
             ce(make_block("    println!(\"hi\");"), BlockType::CodeBlock),
             ce(make_block("}"), BlockType::CodeBlock),
         ];
-        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        let doc = Assembler::assemble(vec![blocks], empty_metadata(), &test_metrics());
         assert_eq!(doc.pages[0].elements.len(), 1);
         if let Element::CodeBlock { code, .. } = &doc.pages[0].elements[0] {
             assert!(code.contains("fn main()"));
@@ -273,7 +436,7 @@ mod tests {
             ce(make_block("- First"), BlockType::ListItem),
             ce(make_block("- Second"), BlockType::ListItem),
         ];
-        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        let doc = Assembler::assemble(vec![blocks], empty_metadata(), &test_metrics());
         if let Element::List { ordered, items } = &doc.pages[0].elements[0] {
             assert!(!ordered);
             assert_eq!(items.len(), 2);
@@ -289,7 +452,7 @@ mod tests {
             ce(make_block("1. First"), BlockType::ListItem),
             ce(make_block("2. Second"), BlockType::ListItem),
         ];
-        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        let doc = Assembler::assemble(vec![blocks], empty_metadata(), &test_metrics());
         if let Element::List { ordered, items } = &doc.pages[0].elements[0] {
             assert!(ordered);
             assert_eq!(items.len(), 2);
@@ -299,17 +462,34 @@ mod tests {
     }
 
     #[test]
-    fn test_assemble_paragraphs() {
+    fn test_assemble_paragraphs_far_apart_stay_separate() {
+        // Paragraphs at very different Y positions should stay separate
+        let b1 = RawTextBlock {
+            text: "Some text.".to_string(),
+            x: 72.0,
+            y: 100.0,
+            end_x: 200.0,
+            font_size: 12.0,
+            font_name: "Helvetica".to_string(),
+            has_bold: false,
+            has_italic: false,
+        };
+        let b2 = RawTextBlock {
+            text: "More text.".to_string(),
+            x: 72.0,
+            y: 300.0,
+            end_x: 200.0,
+            font_size: 12.0,
+            font_name: "Helvetica".to_string(),
+            has_bold: false,
+            has_italic: false,
+        };
         let blocks = vec![
-            ce(make_block("Some text"), BlockType::Paragraph),
-            ce(make_block("More text"), BlockType::Paragraph),
+            ClassifiedElement::Text(b1, BlockType::Paragraph),
+            ClassifiedElement::Text(b2, BlockType::Paragraph),
         ];
-        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        let doc = Assembler::assemble(vec![blocks], empty_metadata(), &test_metrics());
         assert_eq!(doc.pages[0].elements.len(), 2);
-        assert!(matches!(
-            &doc.pages[0].elements[0],
-            Element::Paragraph { .. }
-        ));
     }
 
     #[test]
@@ -320,7 +500,7 @@ mod tests {
             ce(make_block("let x = 1;"), BlockType::CodeBlock),
             ce(make_block("- item"), BlockType::ListItem),
         ];
-        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        let doc = Assembler::assemble(vec![blocks], empty_metadata(), &test_metrics());
         assert_eq!(doc.pages[0].elements.len(), 4);
     }
 
@@ -339,7 +519,7 @@ mod tests {
             make_block_with_font("Bold text", "Helvetica-Bold"),
             BlockType::Paragraph,
         )];
-        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        let doc = Assembler::assemble(vec![blocks], empty_metadata(), &test_metrics());
         if let Element::Paragraph { text } = &doc.pages[0].elements[0] {
             assert!(text.segments[0].bold);
             assert!(!text.segments[0].italic);
@@ -354,7 +534,7 @@ mod tests {
             make_block_with_font("Italic text", "Helvetica-Oblique"),
             BlockType::Paragraph,
         )];
-        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        let doc = Assembler::assemble(vec![blocks], empty_metadata(), &test_metrics());
         if let Element::Paragraph { text } = &doc.pages[0].elements[0] {
             assert!(!text.segments[0].bold);
             assert!(text.segments[0].italic);
@@ -369,7 +549,7 @@ mod tests {
             make_block_with_font("Bold italic text", "Helvetica-BoldOblique"),
             BlockType::Paragraph,
         )];
-        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        let doc = Assembler::assemble(vec![blocks], empty_metadata(), &test_metrics());
         if let Element::Paragraph { text } = &doc.pages[0].elements[0] {
             assert!(text.segments[0].bold);
             assert!(text.segments[0].italic);
@@ -384,7 +564,7 @@ mod tests {
             make_block_with_font("Plain text", "Helvetica"),
             BlockType::Paragraph,
         )];
-        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        let doc = Assembler::assemble(vec![blocks], empty_metadata(), &test_metrics());
         if let Element::Paragraph { text } = &doc.pages[0].elements[0] {
             assert!(!text.segments[0].bold);
             assert!(!text.segments[0].italic);
@@ -419,7 +599,7 @@ mod tests {
             ClassifiedElement::Text(b1, BlockType::Heading(2)),
             ClassifiedElement::Text(b2, BlockType::Heading(2)),
         ];
-        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        let doc = Assembler::assemble(vec![blocks], empty_metadata(), &test_metrics());
         assert_eq!(doc.pages[0].elements.len(), 1);
         if let Element::Heading { level, text } = &doc.pages[0].elements[0] {
             assert_eq!(*level, 2);
@@ -442,7 +622,7 @@ mod tests {
             }),
             ce(make_block("After image"), BlockType::Paragraph),
         ];
-        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        let doc = Assembler::assemble(vec![blocks], empty_metadata(), &test_metrics());
         assert_eq!(doc.pages[0].elements.len(), 3);
         assert!(matches!(
             &doc.pages[0].elements[0],
@@ -486,7 +666,7 @@ mod tests {
             ClassifiedElement::Text(b1, BlockType::Paragraph),
             ClassifiedElement::Text(b2, BlockType::Paragraph),
         ];
-        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        let doc = Assembler::assemble(vec![blocks], empty_metadata(), &test_metrics());
         assert_eq!(doc.pages[0].elements.len(), 1);
         if let Element::Paragraph { text } = &doc.pages[0].elements[0] {
             assert_eq!(
@@ -499,8 +679,8 @@ mod tests {
     }
 
     #[test]
-    fn test_url_continuation_not_merged_without_protocol() {
-        // Without "://" the paragraphs should NOT be merged even if text ends with '-'
+    fn test_hyphenated_word_break_merged() {
+        // Hyphenated word break should be merged with hyphen removed
         let b1 = RawTextBlock {
             text: "some regular text that ends with a hyphen-".to_string(),
             x: 72.0,
@@ -525,7 +705,155 @@ mod tests {
             ClassifiedElement::Text(b1, BlockType::Paragraph),
             ClassifiedElement::Text(b2, BlockType::Paragraph),
         ];
-        let doc = Assembler::assemble(vec![blocks], empty_metadata());
+        let doc = Assembler::assemble(vec![blocks], empty_metadata(), &test_metrics());
+        assert_eq!(doc.pages[0].elements.len(), 1);
+        if let Element::Paragraph { text } = &doc.pages[0].elements[0] {
+            assert_eq!(
+                text.segments[0].text,
+                "some regular text that ends with a hyphenated word"
+            );
+        } else {
+            panic!("Expected merged Paragraph");
+        }
+    }
+
+    #[test]
+    fn test_continuation_paragraph_merged() {
+        // Text that doesn't end with sentence-ending punctuation merges with next line
+        let b1 = RawTextBlock {
+            text: "The title of the project is automatically created from the project name"
+                .to_string(),
+            x: 72.0,
+            y: 700.0,
+            end_x: 500.0,
+            font_size: 12.0,
+            font_name: "Helvetica".to_string(),
+            has_bold: false,
+            has_italic: false,
+        };
+        let b2 = RawTextBlock {
+            text: "and the project ID (see detail for each below).".to_string(),
+            x: 72.0,
+            y: 714.0,
+            end_x: 400.0,
+            font_size: 12.0,
+            font_name: "Helvetica".to_string(),
+            has_bold: false,
+            has_italic: false,
+        };
+        let blocks = vec![
+            ClassifiedElement::Text(b1, BlockType::Paragraph),
+            ClassifiedElement::Text(b2, BlockType::Paragraph),
+        ];
+        let doc = Assembler::assemble(vec![blocks], empty_metadata(), &test_metrics());
+        assert_eq!(doc.pages[0].elements.len(), 1);
+        if let Element::Paragraph { text } = &doc.pages[0].elements[0] {
+            assert!(text.segments[0]
+                .text
+                .contains("project name and the project ID"));
+        } else {
+            panic!("Expected merged Paragraph");
+        }
+    }
+
+    #[test]
+    fn test_separate_sentences_not_merged_at_different_x() {
+        // Paragraphs at different X positions should not merge
+        let b1 = RawTextBlock {
+            text: "First sentence".to_string(),
+            x: 72.0,
+            y: 700.0,
+            end_x: 200.0,
+            font_size: 12.0,
+            font_name: "Helvetica".to_string(),
+            has_bold: false,
+            has_italic: false,
+        };
+        let b2 = RawTextBlock {
+            text: "Different column".to_string(),
+            x: 300.0,
+            y: 714.0,
+            end_x: 450.0,
+            font_size: 12.0,
+            font_name: "Helvetica".to_string(),
+            has_bold: false,
+            has_italic: false,
+        };
+        let blocks = vec![
+            ClassifiedElement::Text(b1, BlockType::Paragraph),
+            ClassifiedElement::Text(b2, BlockType::Paragraph),
+        ];
+        let doc = Assembler::assemble(vec![blocks], empty_metadata(), &test_metrics());
         assert_eq!(doc.pages[0].elements.len(), 2);
+    }
+
+    #[test]
+    fn test_noise_filtering_page_numbers() {
+        let blocks = vec![
+            ce(make_block("Real content"), BlockType::Paragraph),
+            ce(make_block("1/3"), BlockType::Paragraph),
+            ce(make_block("More content"), BlockType::Paragraph),
+        ];
+        let doc = Assembler::assemble(vec![blocks], empty_metadata(), &test_metrics());
+        // "1/3" should be filtered out
+        let texts: Vec<&str> = doc.pages[0]
+            .elements
+            .iter()
+            .filter_map(|el| match el {
+                Element::Paragraph { text } => Some(text.segments[0].text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(!texts.contains(&"1/3"));
+    }
+
+    #[test]
+    fn test_noise_filtering_onenote() {
+        let blocks = vec![
+            ce(make_block("Real content"), BlockType::Paragraph),
+            ce(make_block("OneNote"), BlockType::Paragraph),
+        ];
+        let doc = Assembler::assemble(vec![blocks], empty_metadata(), &test_metrics());
+        let texts: Vec<&str> = doc.pages[0]
+            .elements
+            .iter()
+            .filter_map(|el| match el {
+                Element::Paragraph { text } => Some(text.segments[0].text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(!texts.contains(&"OneNote"));
+    }
+
+    #[test]
+    fn test_noise_filtering_timestamp() {
+        let blocks = vec![
+            ce(make_block("Real content"), BlockType::Paragraph),
+            ce(make_block("12/03/2026, 12:41"), BlockType::Paragraph),
+        ];
+        let doc = Assembler::assemble(vec![blocks], empty_metadata(), &test_metrics());
+        let texts: Vec<&str> = doc.pages[0]
+            .elements
+            .iter()
+            .filter_map(|el| match el {
+                Element::Paragraph { text } => Some(text.segments[0].text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(!texts.contains(&"12/03/2026, 12:41"));
+    }
+
+    #[test]
+    fn test_append_continuation_hyphen() {
+        let mut text = "Précédent/Suivan-".to_string();
+        Assembler::append_continuation(&mut text, "t");
+        assert_eq!(text, "Précédent/Suivant");
+    }
+
+    #[test]
+    fn test_append_continuation_space() {
+        let mut text = "some text that".to_string();
+        Assembler::append_continuation(&mut text, "continues here");
+        assert_eq!(text, "some text that continues here");
     }
 }

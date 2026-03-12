@@ -170,14 +170,22 @@ impl MarkdownRenderer {
         match opts.image_mode {
             ImageMode::Inline => {
                 let encoded = BASE64.encode(data);
+                let mime = match Self::detect_image_ext(data) {
+                    "jpg" => "image/jpeg",
+                    "gif" => "image/gif",
+                    "webp" => "image/webp",
+                    _ => "image/png",
+                };
                 out.push_str(&format!(
-                    "![{}](data:image/png;base64,{})\n",
-                    alt_text, encoded
+                    "![{}](data:{};base64,{})\n",
+                    alt_text, mime, encoded
                 ));
             }
             ImageMode::Extract => {
                 *image_counter += 1;
-                let filename = format!("img_{}.png", image_counter);
+                // Detect image format from magic bytes
+                let ext = Self::detect_image_ext(data);
+                let filename = format!("img_{}.{}", image_counter, ext);
                 let dir = &opts.image_output_dir;
 
                 fs::create_dir_all(dir)?;
@@ -195,5 +203,24 @@ impl MarkdownRenderer {
             }
         }
         Ok(())
+    }
+
+    /// Detect image format from magic bytes and return the file extension.
+    fn detect_image_ext(data: &[u8]) -> &'static str {
+        if data.len() >= 4 && &data[0..4] == b"\x89PNG" {
+            "png"
+        } else if data.len() >= 2 && &data[0..2] == b"\xff\xd8" {
+            "jpg"
+        } else if data.len() >= 4 && &data[0..4] == b"GIF8" {
+            "gif"
+        } else if data.len() >= 4
+            && &data[0..4] == b"RIFF"
+            && data.len() >= 12
+            && &data[8..12] == b"WEBP"
+        {
+            "webp"
+        } else {
+            "png"
+        }
     }
 }

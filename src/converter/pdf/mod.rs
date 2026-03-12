@@ -9,7 +9,7 @@ use crate::model::document::{Document, Metadata};
 use crate::model::options::ConvertOptions;
 use assembler::Assembler;
 use classifier::{ClassifiedElement, Classifier};
-use extractor::{PdfExtractor, RawPage};
+use extractor::{PageMetrics, PdfExtractor, RawPage};
 use std::path::Path;
 use table_detector::TableDetector;
 use tracing::{debug, info};
@@ -32,11 +32,13 @@ impl Converter for PdfConverter {
         let (raw_pages, pdf_meta) = PdfExtractor::extract_with_metadata(input)?;
         debug!(pages = raw_pages.len(), "Extraction complete");
 
+        let metrics = PageMetrics::from_pages(&raw_pages);
+
         debug!("Phase 2: Table detection + classification");
         let mut all_classified: Vec<Vec<ClassifiedElement>> = Vec::new();
 
         for raw_page in &raw_pages {
-            let detection = TableDetector::detect(raw_page);
+            let detection = TableDetector::detect(raw_page, &metrics);
 
             // Phase 2 merge: assemble non-table blocks into full text lines
             let assembled = PdfExtractor::assemble_lines(detection.remaining_elements);
@@ -73,7 +75,7 @@ impl Converter for PdfConverter {
         };
 
         debug!("Phase 4: Assembling document");
-        let doc = Assembler::assemble(all_classified, metadata);
+        let doc = Assembler::assemble(all_classified, metadata, &metrics);
         info!(
             pages = doc.pages.len(),
             elements = doc.pages.iter().map(|p| p.elements.len()).sum::<usize>(),

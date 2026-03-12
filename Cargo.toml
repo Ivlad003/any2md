@@ -8,6 +8,8 @@ description = "CLI utility for converting files to Markdown"
 clap = { version = "4", features = ["derive"] }
 lopdf = "0.34"
 image = "0.25"
+png = "0.18"
+flate2 = "1"
 base64 = "0.22"
 thiserror = "1"
 tracing = "0.1"

@@ -453,11 +453,11 @@ fn test_render_image_extract_mode_saves_file() {
     // Check markdown output references
     let dir_name = tmp_dir.file_name().unwrap().to_string_lossy();
     assert!(result.contains(&format!("![test img]({}/img_1.png)", dir_name)));
-    assert!(result.contains(&format!("![image]({}/img_2.png)", dir_name)));
+    assert!(result.contains(&format!("![image]({}/img_2.jpg)", dir_name)));
 
     // Check files were actually written
     assert!(tmp_dir.join("img_1.png").exists());
-    assert!(tmp_dir.join("img_2.png").exists());
+    assert!(tmp_dir.join("img_2.jpg").exists());
 
     // Check file contents
     assert_eq!(
@@ -465,7 +465,7 @@ fn test_render_image_extract_mode_saves_file() {
         vec![0x89, 0x50, 0x4E, 0x47]
     );
     assert_eq!(
-        std::fs::read(tmp_dir.join("img_2.png")).unwrap(),
+        std::fs::read(tmp_dir.join("img_2.jpg")).unwrap(),
         vec![0xFF, 0xD8, 0xFF]
     );
 
